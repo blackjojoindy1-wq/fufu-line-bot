@@ -1,10 +1,10 @@
-// LINE Booking Bot – Triggered Flow (Branch-specific Registration + Buttons)
-// -----------------------------------------------------------------------
-// ✅ Starts ONLY when user types: "book" (EN), "จอง" (TH), or "予約" (JP)
-// ✅ Sends "how to book" hint only on first add (follow)
-// ✅ After ✅ Confirm: send pending note + plain text summary + **branch-specific registration card with button**
-// ✅ New customers register; returning customers do not need to register again
-// ✅ Shows branch menu links when asked
+// LINE Booking Bot – Triggered Flow (Fix: Discount Step + Branch Registration Buttons)
+// --------------------------------------------------------------------------------
+// ✅ Flow ONLY starts when user types: "book" / "จอง" / "予約"
+// ✅ Follow (first add): send ONE hint on how to start (no spam)
+// ✅ Discount step: added quick reply (No discount) + robust handling of "skip" in EN/JP/TH
+// ✅ After ✅ Confirm: send pending note + plain-text summary + **branch-specific registration card button**
+// ✅ After completion: do NOT send summaries/reminders on random messages
 
 const express = require('express');
 const line = require('@line/bot-sdk');
@@ -17,10 +17,10 @@ const config = {
 const client = new line.Client(config);
 const app = express();
 
-// In-memory state store (swap for DB in production)
+// In-memory store (swap with DB for production)
 const userState = new Map();
+const TRIGGER_REGEX = /(^|\s)(book|จอง|予約)(\s|$)/i;
 
-// ===== Constants =====
 const MENUS = {
   THONGLOR: 'https://fufuhaircolor.com/thong-lo-%7C-menu',
   PHROMPHONG: 'https://fufuhaircolor.com/phrom-phong-%7C-menu',
@@ -30,8 +30,6 @@ const REG_FORMS = {
   THONGLOR: 'https://forms.gle/pSEPMK6E77a9XTKZ8',
   PHROMPHONG: 'https://forms.gle/bmNKyN6Yo4w8poN76',
 };
-
-const TRIGGER_REGEX = /(^|\s)(book|จอง|予約)(\s|$)/i;
 
 function baseState() {
   return { lang: null, branch: null, date: null, time: null, service: null, name: null, phone: null, discount: null, completed: false };
@@ -53,44 +51,60 @@ function t(lang, key) {
     ASK_NAME: { EN: 'Please provide your name in English.', JP: '英語でお名前をご記入ください。', TH: 'กรุณากรอกชื่อเป็นภาษาอังกฤษค่ะ' },
     ASK_PHONE: { EN: 'Please provide your contact number.', JP: 'ご連絡先の電話番号をご記入ください。', TH: 'กรุณากรอกหมายเลขโทรศัพท์ที่ติดต่อได้ค่ะ' },
     ASK_DISCOUNT: { EN: 'Any discount or promotion code to use? (Optional)', JP: 'ご利用の割引・プロモーションコードはありますか？（任意）', TH: 'มีโค้ดส่วนลดหรือโปรโมชันต้องการใช้ไหมคะ (ไม่บังคับ)' },
+    NO_DISCOUNT_LABEL: { EN: 'No discount', JP: '割引なし', TH: 'ไม่ใช้ส่วนลด' },
     CONFIRM_TITLE: { EN: 'Please confirm your booking details', JP: 'ご予約内容のご確認', TH: 'กรุณายืนยันรายละเอียดการจองค่ะ' },
     RECEIVED_PENDING: { EN: "We've received your booking request. We will check availability and reconfirm with you shortly.", JP: 'ご予約リクエストを受け付けました。空き状況を確認し、追ってご連絡いたします。', TH: 'เราได้รับคำขอจองของคุณแล้ว จะตรวจสอบคิวและยืนยันกลับให้โดยเร็วค่ะ' },
     SUMMARY_TITLE: { EN: 'Booking summary', JP: 'ご予約サマリー', TH: 'สรุปรายละเอียดการจอง' },
-    REG_NOTE: { EN: 'If you are a **new customer**, please register. **Returning customers do not need to register again.** Thank you!', JP: '【新規のお客様】はご登録をお願いします。既存のお客様は再登録の必要はありません。ありがとうございます。', TH: 'หากเป็น**ลูกค้าใหม่** กรุณาลงทะเบียน **ลูกค้าเก่าไม่ต้องลงทะเบียนซ้ำ** ขอบคุณค่ะ' },
     REG_TITLE: { EN: 'Customer Registration', JP: 'お客様登録', TH: 'ลงทะเบียนลูกค้า' },
+    REG_NOTE: { EN: 'If you are a **new customer**, please register. **Returning customers do not need to register again.** Thank you!', JP: '【新規のお客様】はご登録をお願いします。既存のお客様は再登録の必要はありません。ありがとうございます。', TH: 'หากเป็น**ลูกค้าใหม่** กรุณาลงทะเบียน **ลูกค้าเก่าไม่ต้องลงทะเบียนซ้ำ** ขอบคุณค่ะ' },
     REG_BTN: { EN: 'Open Registration Form', JP: '登録フォームを開く', TH: 'เปิดแบบฟอร์มลงทะเบียน' },
   };
   return copy[key][lang || 'EN'];
 }
 
-// ===== Message builders =====
-function quickReplyLanguage() { return { type: 'text', text: 'Select language / 言語を選択 / เลือกภาษา', quickReply: { items: [ { type: 'action', action: { type: 'postback', label: 'English', data: 'lang=EN' } }, { type: 'action', action: { type: 'postback', label: '日本語', data: 'lang=JP' } }, { type: 'action', action: { type: 'postback', label: 'ไทย', data: 'lang=TH' } } ] } }; }
-function quickReplyBranch(lang) { return { type: 'text', text: t(lang, 'CHOOSE_BRANCH'), quickReply: { items: [ { type: 'action', action: { type: 'postback', label: t(lang, 'BRANCH_THONGLOR'), data: 'branch=THONGLOR' } }, { type: 'action', action: { type: 'postback', label: t(lang, 'BRANCH_PHROMPHONG'), data: 'branch=PHROMPHONG' } } ] } }; }
+// -------- Message builders --------
+function quickReplyLanguage() {
+  return { type: 'text', text: 'Select language / 言語を選択 / เลือกภาษา', quickReply: { items: [ { type: 'action', action: { type: 'postback', label: 'English', data: 'lang=EN' } }, { type: 'action', action: { type: 'postback', label: '日本語', data: 'lang=JP' } }, { type: 'action', action: { type: 'postback', label: 'ไทย', data: 'lang=TH' } } ] } };
+}
+function quickReplyBranch(lang) {
+  return { type: 'text', text: t(lang, 'CHOOSE_BRANCH'), quickReply: { items: [ { type: 'action', action: { type: 'postback', label: t(lang, 'BRANCH_THONGLOR'), data: 'branch=THONGLOR' } }, { type: 'action', action: { type: 'postback', label: t(lang, 'BRANCH_PHROMPHONG'), data: 'branch=PHROMPHONG' } } ] } };
+}
 function quickReplyDate(lang) { return { type: 'text', text: t(lang, 'ASK_DATE'), quickReply: { items: [ { type: 'action', action: { type: 'datetimepicker', label: 'Pick date', data: 'pick=date', mode: 'date' } } ] } }; }
 function quickReplyTime(lang) { return { type: 'text', text: t(lang, 'ASK_TIME'), quickReply: { items: [ { type: 'action', action: { type: 'postback', label: '10:00', data: 'time=10:00' } }, { type: 'action', action: { type: 'postback', label: '13:00', data: 'time=13:00' } }, { type: 'action', action: { type: 'postback', label: '16:00', data: 'time=16:00' } }, { type: 'action', action: { type: 'postback', label: 'Other', data: 'time=OTHER' } } ] } }; }
 function askService(lang) { return { type: 'text', text: `${t(lang, 'ASK_SERVICE')}\n\n${t(lang, 'NEED_MENU')}`, quickReply: { items: [ { type: 'action', action: { type: 'message', label: 'Color', text: 'Color' } }, { type: 'action', action: { type: 'message', label: 'Bleach on Color', text: 'Bleach on Color' } }, { type: 'action', action: { type: 'message', label: 'Treatment', text: 'Treatment' } }, { type: 'action', action: { type: 'message', label: 'Menu', text: 'Menu' } } ] } }; }
 function askName(lang) { return { type: 'text', text: t(lang, 'ASK_NAME') }; }
 function askPhone(lang) { return { type: 'text', text: t(lang, 'ASK_PHONE') }; }
-function askDiscount(lang) { return { type: 'text', text: t(lang, 'ASK_DISCOUNT') }; }
-function buildSummaryText(lang, s) { const branchLabel = s.branch === 'THONGLOR' ? t(lang, 'BRANCH_THONGLOR') : t(lang, 'BRANCH_PHROMPHONG'); return `${t(lang, 'SUMMARY_TITLE')}\n` + `Branch: ${branchLabel}\n` + `Date: ${s.date || '-'}\n` + `Time: ${s.time || '-'}\n` + `Service: ${s.service || '-'}\n` + `Name: ${s.name || '-'}\n` + `Phone: ${s.phone || '-'}\n` + `Discount: ${s.discount || '-'}`; }
+function askDiscount(lang) {
+  const noLabel = t(lang, 'NO_DISCOUNT_LABEL');
+  return { type: 'text', text: t(lang, 'ASK_DISCOUNT'), quickReply: { items: [ { type: 'action', action: { type: 'message', label: noLabel, text: '-' } } ] } };
+}
+
 function showMenuForBranch(lang, branch) { const url = branch === 'THONGLOR' ? MENUS.THONGLOR : MENUS.PHROMPHONG; return { type: 'text', text: `${t(lang, 'NEED_MENU')}\n${url}` }; }
+
+function buildSummaryText(lang, s) {
+  const branchLabel = s.branch === 'THONGLOR' ? t(lang, 'BRANCH_THONGLOR') : t(lang, 'BRANCH_PHROMPHONG');
+  return `${t(lang, 'SUMMARY_TITLE')}\n` +
+    `Branch: ${branchLabel}\n` +
+    `Date: ${s.date || '-'}\n` +
+    `Time: ${s.time || '-'}\n` +
+    `Service: ${s.service || '-'}\n` +
+    `Name: ${s.name || '-'}\n` +
+    `Phone: ${s.phone || '-'}\n` +
+    `Discount: ${s.discount || '-'}`;
+}
+
+function confirmationFlex(lang, s) {
+  const branchLabel = s.branch === 'THONGLOR' ? t(lang, 'BRANCH_THONGLOR') : t(lang, 'BRANCH_PHROMPHONG');
+  return { type: 'flex', altText: t(lang, 'CONFIRM_TITLE'), contents: { type: 'bubble', header: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: t(lang, 'CONFIRM_TITLE'), weight: 'bold', size: 'md' }] }, body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: [ { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Branch', flex: 2 }, { type: 'text', text: branchLabel, flex: 5 }] }, { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Date', flex: 2 }, { type: 'text', text: s.date || '-', flex: 5 }] }, { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Time', flex: 2 }, { type: 'text', text: s.time || '-', flex: 5 }] }, { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Service', flex: 2 }, { type: 'text', text: s.service || '-', flex: 5 }] }, { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Name', flex: 2 }, { type: 'text', text: s.name || '-', flex: 5 }] }, { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Phone', flex: 2 }, { type: 'text', text: s.phone || '-', flex: 5 }] }, { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Discount', flex: 2 }, { type: 'text', text: s.discount || '-', flex: 5 }] } ] }, footer: { type: 'box', layout: 'horizontal', spacing: 'md', contents: [ { type: 'button', style: 'primary', action: { type: 'postback', label: '✅ Confirm', data: 'confirm=YES' } }, { type: 'button', style: 'secondary', action: { type: 'postback', label: '✏️ Edit', data: 'confirm=EDIT' } } ] } } };
+}
 
 function registrationCard(lang, branch) {
   const url = branch === 'THONGLOR' ? REG_FORMS.THONGLOR : REG_FORMS.PHROMPHONG;
   const branchLabel = branch === 'THONGLOR' ? t(lang, 'BRANCH_THONGLOR') : t(lang, 'BRANCH_PHROMPHONG');
-  return {
-    type: 'flex',
-    altText: t(lang, 'REG_TITLE'),
-    contents: {
-      type: 'bubble',
-      header: { type: 'box', layout: 'vertical', contents: [ { type: 'text', text: t(lang, 'REG_TITLE'), weight: 'bold', size: 'lg' }, { type: 'text', text: branchLabel, size: 'sm', color: '#888888' } ] },
-      body: { type: 'box', layout: 'vertical', spacing: 'md', contents: [ { type: 'text', text: t(lang, 'REG_NOTE') } ] },
-      footer: { type: 'box', layout: 'vertical', contents: [ { type: 'button', style: 'primary', action: { type: 'uri', label: t(lang, 'REG_BTN'), uri: url } } ] },
-    },
-  };
+  return { type: 'flex', altText: t(lang, 'REG_TITLE'), contents: { type: 'bubble', header: { type: 'box', layout: 'vertical', contents: [ { type: 'text', text: t(lang, 'REG_TITLE'), weight: 'bold', size: 'lg' }, { type: 'text', text: branchLabel, size: 'sm', color: '#888' } ] }, body: { type: 'box', layout: 'vertical', spacing: 'md', contents: [ { type: 'text', text: t(lang, 'REG_NOTE') } ] }, footer: { type: 'box', layout: 'vertical', contents: [ { type: 'button', style: 'primary', action: { type: 'uri', label: t(lang, 'REG_BTN'), uri: url } } ] } } };
 }
 
-// ===== Webhook =====
+// -------- Webhook --------
 app.post('/callback', line.middleware(config), async (req, res) => {
   try { const results = await Promise.all(req.body.events.map(handleEvent)); res.json(results); } catch (e) { console.error(e); res.status(500).end(); }
 });
@@ -100,16 +114,16 @@ async function handleEvent(event) {
   const s = getUser(userId);
 
   if (event.type === 'follow') {
-    return client.replyMessage(event.replyToken, [ { type: 'text', text: t('EN', 'START_HINT') } ]);
+    // Only show the start hint once when user adds the bot
+    return client.replyMessage(event.replyToken, [{ type: 'text', text: t('EN', 'START_HINT') }]);
   }
 
   if (event.type === 'postback') {
     const data = parseQuery(event.postback.data);
-
     if (data.lang) { s.lang = data.lang; return client.replyMessage(event.replyToken, [ { type: 'text', text: t(s.lang, 'GREET') }, quickReplyBranch(s.lang) ]); }
     if (data.branch) { s.branch = data.branch; return client.replyMessage(event.replyToken, [ quickReplyDate(s.lang) ]); }
     if (data.pick === 'date' && event.postback.params?.date) { s.date = event.postback.params.date; return client.replyMessage(event.replyToken, [ quickReplyTime(s.lang) ]); }
-    if (data.time) { if (data.time === 'OTHER') return client.replyMessage(event.replyToken, [ { type: 'text', text: t(s.lang, 'ASK_TIME') + ' (Please type your preferred time)' } ]); s.time = data.time; return client.replyMessage(event.replyToken, [ askService(s.lang) ]); }
+    if (data.time) { if (data.time === 'OTHER') return client.replyMessage(event.replyToken, [{ type: 'text', text: t(s.lang, 'ASK_TIME') + ' (Please type your preferred time)' }]); s.time = data.time; return client.replyMessage(event.replyToken, [ askService(s.lang) ]); }
 
     if (data.confirm) {
       if (data.confirm === 'YES') {
@@ -123,25 +137,36 @@ async function handleEvent(event) {
   }
 
   if (event.type === 'message' && event.message.type === 'text') {
-    const text = (event.message.text || '').trim();
+    const textRaw = (event.message.text || '').trim();
 
-    if (TRIGGER_REGEX.test(text)) { resetUser(userId); return client.replyMessage(event.replyToken, [ quickReplyLanguage() ]); }
+    // 1) Trigger words → reset & start
+    if (TRIGGER_REGEX.test(textRaw)) { resetUser(userId); return client.replyMessage(event.replyToken, [ quickReplyLanguage() ]); }
 
-    if (/\bmenu\b/i.test(text) || /メニュー/.test(text) || /เมนู/.test(text)) {
+    // 2) Menu intent
+    if (/\bmenu\b/i.test(textRaw) || /メニュー/.test(textRaw) || /เมนู/.test(textRaw)) {
       if (!s.branch) return client.replyMessage(event.replyToken, [ { type: 'text', text: t(s.lang || 'EN', 'NEED_MENU') }, quickReplyBranch(s.lang || 'EN') ]);
       return client.replyMessage(event.replyToken, [ showMenuForBranch(s.lang || 'EN', s.branch) ]);
     }
 
+    // 3) If user hasn't started a booking, keep silent
     if (!s.lang && !s.branch && !s.date && !s.time && !s.service) { return null; }
 
-    if (!s.branch) return client.replyMessage(event.replyToken, [ quickReplyBranch(s.lang) ]);
-    if (!s.date) return client.replyMessage(event.replyToken, [ quickReplyDate(s.lang) ]);
-    if (!s.time) { if (/^\d{1,2}:\d{2}$/.test(text)) { s.time = text; return client.replyMessage(event.replyToken, [ askService(s.lang) ]); } return client.replyMessage(event.replyToken, [ quickReplyTime(s.lang) ]); }
-    if (!s.service) { s.service = text; return client.replyMessage(event.replyToken, [ askName(s.lang) ]); }
-    if (!s.name) { s.name = text; return client.replyMessage(event.replyToken, [ askPhone(s.lang) ]); }
-    if (!s.phone) { s.phone = text; return client.replyMessage(event.replyToken, [ askDiscount(s.lang) ]); }
-    if (!s.discount) { s.discount = text === '-' ? '' : text; return client.replyMessage(event.replyToken, [ confirmationFlex(s.lang, s) ]); }
+    // 4) Continue flow
+    if (!s.branch) return client.replyMessage(event.replyToken, [ quickReplyBranch(s.lang || 'EN') ]);
+    if (!s.date) return client.replyMessage(event.replyToken, [ quickReplyDate(s.lang || 'EN') ]);
+    if (!s.time) { if (/^\d{1,2}:\d{2}$/.test(textRaw)) { s.time = textRaw; return client.replyMessage(event.replyToken, [ askService(s.lang || 'EN') ]); } return client.replyMessage(event.replyToken, [ quickReplyTime(s.lang || 'EN') ]); }
+    if (!s.service) { s.service = textRaw; return client.replyMessage(event.replyToken, [ askName(s.lang || 'EN') ]); }
+    if (!s.name) { s.name = textRaw; return client.replyMessage(event.replyToken, [ askPhone(s.lang || 'EN') ]); }
+    if (!s.phone) { s.phone = textRaw; return client.replyMessage(event.replyToken, [ askDiscount(s.lang || 'EN') ]); }
+    if (!s.discount) {
+      // Robust discount handling: treat various "no/skip" responses as empty
+      const text = textRaw.toLowerCase();
+      const noWords = ['no', 'none', 'skip', '-', 'なし', 'ไม่ใช้', 'ไม่ใช้ส่วนลด', 'ไม่มี'];
+      s.discount = noWords.includes(text) ? '' : textRaw;
+      return client.replyMessage(event.replyToken, [ confirmationFlex(s.lang || 'EN', s) ]);
+    }
 
+    // 5) After completed booking, stay quiet
     if (s.completed) { return null; }
   }
   return null;
