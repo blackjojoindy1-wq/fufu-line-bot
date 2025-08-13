@@ -1,0 +1,13 @@
+{
+  "name": "fufu-line-bot",
+  "version": "1.0.0",
+  "private": true,
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "@line/bot-sdk": "^7.5.2",
+    "express": "^4.19.2"
+  }
+}
