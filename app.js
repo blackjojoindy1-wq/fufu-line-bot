@@ -1,13 +1,8 @@
-// LINE Booking Bot – Trigger + Multilingual Registration Card (app.js)
-// -------------------------------------------------------------------
-// - Starts ONLY when user types: "book" / "จอง" / "予約"
-// - Sends a one‑time start hint on follow (first add)
-// - Guides through branch → date → time → service → name → phone → discount → confirm
-// - After ✅ Confirm: sends pending note + plain‑text summary + multilingual registration card
-//   * Card title: "New Customer Registration" (localized)
-//   * Card description: "Please fill in if New Customer." (localized)
-//   * Button opens correct Google Form by branch (Thong Lo / Phrom Phong)
-// - No repeated summaries/reminders after completion
+// LINE Booking Bot – Multilingual Confirm/Edit Buttons (app.js)
+// -----------------------------------------------------------------
+// ✅ Confirm/Edit buttons are now localized (EN/JP/TH) for both label and displayText
+// ✅ Keeps multilingual registration card (branch-specific link), trigger-only start,
+//    one-time follow hint, confirm-button robustness, and no post-booking spam
 
 const express = require('express');
 const line = require('@line/bot-sdk');
@@ -22,6 +17,7 @@ const app = express();
 
 // In-memory state (replace with DB for production)
 const userState = new Map();
+
 const TRIGGER_REGEX = /(^|\s)(book|จอง|予約)(\s|$)/i;
 
 const MENUS = {
@@ -40,7 +36,7 @@ function baseState() {
 function getUser(id) { if (!userState.has(id)) userState.set(id, baseState()); return userState.get(id); }
 function resetUser(id) { userState.set(id, baseState()); return userState.get(id); }
 
-// ---------- i18n ----------
+// ---------------- i18n ----------------
 function t(lang, key) {
   const copy = {
     START_HINT: { EN: "Hi! Type 'book' to start a booking. / พิมพ์ 'จอง' เพื่อเริ่มจอง / '予約' で開始", JP: "こんにちは！ 'book' または '予約' と送ると予約が開始します。/ 'จอง' でもOK", TH: "สวัสดีค่ะ! พิมพ์คำว่า 'จอง' หรือ 'book' เพื่อเริ่มจองได้เลย / พิมพ์ '予約' ก็ได้" },
@@ -62,21 +58,22 @@ function t(lang, key) {
     REG_TITLE: { EN: 'New Customer Registration', JP: '新規のお客様登録', TH: 'ลงทะเบียนลูกค้าใหม่' },
     REG_NOTE: { EN: 'Please fill in if New Customer.', JP: '新規のお客様のみご記入ください。', TH: 'หากเป็นลูกค้าใหม่ กรุณากรอกแบบฟอร์ม' },
     REG_BTN: { EN: 'Open Registration Form', JP: '登録フォームを開く', TH: 'เปิดแบบฟอร์มลงทะเบียน' },
+    // New: localized button labels
+    BTN_CONFIRM: { EN: '✅ Confirm', JP: '✅ 確認する', TH: '✅ ยืนยัน' },
+    BTN_EDIT: { EN: '✏️ Edit', JP: '✏️ 修正する', TH: '✏️ แก้ไข' },
+    DISPLAY_CONFIRM: { EN: 'Confirm', JP: '確認する', TH: 'ยืนยัน' },
+    DISPLAY_EDIT: { EN: 'Edit', JP: '修正する', TH: 'แก้ไข' },
   };
   return copy[key][lang || 'EN'];
 }
 
-// ---------- Message builders ----------
-function quickReplyLanguage() {
-  return { type: 'text', text: 'Select language / 言語を選択 / เลือกภาษา', quickReply: { items: [ { type: 'action', action: { type: 'postback', label: 'English', data: 'lang=EN' } }, { type: 'action', action: { type: 'postback', label: '日本語', data: 'lang=JP' } }, { type: 'action', action: { type: 'postback', label: 'ไทย', data: 'lang=TH' } } ] } };
-}
-function quickReplyBranch(lang) {
-  return { type: 'text', text: t(lang, 'CHOOSE_BRANCH'), quickReply: { items: [ { type: 'action', action: { type: 'postback', label: t(lang, 'BRANCH_THONGLOR'), data: 'branch=THONGLOR' } }, { type: 'action', action: { type: 'postback', label: t(lang, 'BRANCH_PHROMPHONG'), data: 'branch=PHROMPHONG' } } ] } };
+// -------------- Message builders --------------
+function quickReplyLanguage() { return { type: 'text', text: 'Select language / 言語を選択 / เลือกภาษา', quickReply: { items: [ { type: 'action', action: { type: 'postback', label: 'English', data: 'lang=EN' } }, { type: 'action', action: { type: 'postback', label: '日本語', data: 'lang=JP' } }, { type: 'action', action: { type: 'postback', label: 'ไทย', data: 'lang=TH' } } ] } }; }
+function quickReplyBranch(lang) { return { type: 'text', text: t(lang, 'CHOOSE_BRANCH'), quickReply: { items: [ { type: 'action', action: { type: 'postback', label: t(lang, 'BRANCH_THONGLOR'), data: 'branch=THONGLOR' } }, { type: 'action', action: { type: 'postback', label: t(lang, 'BRANCH_PHROMPHONG'), data: 'branch=PHROMPHONG' } } ] } };
 }
 function quickReplyDate(lang) { return { type: 'text', text: t(lang, 'ASK_DATE'), quickReply: { items: [ { type: 'action', action: { type: 'datetimepicker', label: 'Pick date', data: 'pick=date', mode: 'date' } } ] } }; }
 function quickReplyTime(lang) { return { type: 'text', text: t(lang, 'ASK_TIME'), quickReply: { items: [ { type: 'action', action: { type: 'postback', label: '10:00', data: 'time=10:00' } }, { type: 'action', action: { type: 'postback', label: '13:00', data: 'time=13:00' } }, { type: 'action', action: { type: 'postback', label: '16:00', data: 'time=16:00' } }, { type: 'action', action: { type: 'postback', label: 'Other', data: 'time=OTHER' } } ] } }; }
-function askService(lang) { return { type: 'text', text: `${t(lang, 'ASK_SERVICE')}\n\n${t(lang, 'NEED_MENU')}`, quickReply: { items: [ { type: 'action', action: { type: 'message', label: 'Color', text: 'Color' } }, { type: 'action', action: { type: 'message', label: 'Bleach on Color', text: 'Bleach on Color' } }, { type: 'action', action: { type: 'message', label: 'Treatment', text: 'Treatment' } }, { type: 'action', action: { type: 'message', label: 'Menu', text: 'Menu' } } ] } };
-}
+function askService(lang) { return { type: 'text', text: `${t(lang, 'ASK_SERVICE')}\n\n${t(lang, 'NEED_MENU')}`, quickReply: { items: [ { type: 'action', action: { type: 'message', label: 'Color', text: 'Color' } }, { type: 'action', action: { type: 'message', label: 'Bleach on Color', text: 'Bleach on Color' } }, { type: 'action', action: { type: 'message', label: 'Treatment', text: 'Treatment' } }, { type: 'action', action: { type: 'message', label: 'Menu', text: 'Menu' } } ] } }; }
 function askName(lang) { return { type: 'text', text: t(lang, 'ASK_NAME') }; }
 function askPhone(lang) { return { type: 'text', text: t(lang, 'ASK_PHONE') }; }
 function askDiscount(lang) { const noLabel = t(lang, 'NO_DISCOUNT_LABEL'); return { type: 'text', text: t(lang, 'ASK_DISCOUNT'), quickReply: { items: [ { type: 'action', action: { type: 'message', label: noLabel, text: '-' } } ] } }; }
@@ -87,7 +84,34 @@ function buildSummaryText(lang, s) { const branchLabel = s.branch === 'THONGLOR'
 
 function confirmationFlex(lang, s) {
   const branchLabel = s.branch === 'THONGLOR' ? t(lang, 'BRANCH_THONGLOR') : t(lang, 'BRANCH_PHROMPHONG');
-  return { type: 'flex', altText: t(lang, 'CONFIRM_TITLE'), contents: { type: 'bubble', header: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: t(lang, 'CONFIRM_TITLE'), weight: 'bold', size: 'md' }] }, body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: [ { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Branch', flex: 2 }, { type: 'text', text: branchLabel, flex: 5 }] }, { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Date', flex: 2 }, { type: 'text', text: s.date || '-', flex: 5 }] }, { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Time', flex: 2 }, { type: 'text', text: s.time || '-', flex: 5 }] }, { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Service', flex: 2 }, { type: 'text', text: s.service || '-', flex: 5 }] }, { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Name', flex: 2 }, { type: 'text', text: s.name || '-', flex: 5 }] }, { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Phone', flex: 2 }, { type: 'text', text: s.phone || '-', flex: 5 }] }, { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Discount', flex: 2 }, { type: 'text', text: s.discount || '-', flex: 5 }] } ] }, footer: { type: 'box', layout: 'vertical', spacing: 'md', contents: [ { type: 'button', style: 'primary', action: { type: 'postback', label: '✅ Confirm', data: 'action=confirm&value=YES', displayText: 'Confirm' } }, { type: 'button', style: 'secondary', action: { type: 'postback', label: '✏️ Edit', data: 'action=confirm&value=EDIT', displayText: 'Edit' } } ] } } };
+  return {
+    type: 'flex',
+    altText: t(lang, 'CONFIRM_TITLE'),
+    contents: {
+      type: 'bubble',
+      header: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: t(lang, 'CONFIRM_TITLE'), weight: 'bold', size: 'md' }] },
+      body: {
+        type: 'box', layout: 'vertical', spacing: 'sm', contents: [
+          { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Branch', flex: 2 }, { type: 'text', text: branchLabel, flex: 5 }] },
+          { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Date', flex: 2 }, { type: 'text', text: s.date || '-', flex: 5 }] },
+          { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Time', flex: 2 }, { type: 'text', text: s.time || '-', flex: 5 }] },
+          { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Service', flex: 2 }, { type: 'text', text: s.service || '-', flex: 5 }] },
+          { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Name', flex: 2 }, { type: 'text', text: s.name || '-', flex: 5 }] },
+          { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Phone', flex: 2 }, { type: 'text', text: s.phone || '-', flex: 5 }] },
+          { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Discount', flex: 2 }, { type: 'text', text: s.discount || '-', flex: 5 }] },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical', // more reliable than horizontal for some clients
+        spacing: 'md',
+        contents: [
+          { type: 'button', style: 'primary', action: { type: 'postback', label: t(lang, 'BTN_CONFIRM'), data: 'action=confirm&value=YES', displayText: t(lang, 'DISPLAY_CONFIRM') } },
+          { type: 'button', style: 'secondary', action: { type: 'postback', label: t(lang, 'BTN_EDIT'), data: 'action=confirm&value=EDIT', displayText: t(lang, 'DISPLAY_EDIT') } },
+        ],
+      },
+    },
+  };
 }
 
 function registrationCard(lang, branch) {
@@ -96,7 +120,7 @@ function registrationCard(lang, branch) {
   return { type: 'flex', altText: t(lang, 'REG_TITLE'), contents: { type: 'bubble', header: { type: 'box', layout: 'vertical', contents: [ { type: 'text', text: t(lang, 'REG_TITLE'), weight: 'bold', size: 'lg' }, { type: 'text', text: branchLabel, size: 'sm', color: '#888' } ] }, body: { type: 'box', layout: 'vertical', spacing: 'md', contents: [ { type: 'text', text: t(lang, 'REG_NOTE') } ] }, footer: { type: 'box', layout: 'vertical', contents: [ { type: 'button', style: 'primary', action: { type: 'uri', label: t(lang, 'REG_BTN'), uri: url } } ] } } };
 }
 
-// ---------- Webhook ----------
+// ---------------- Webhook ----------------
 app.post('/callback', line.middleware(config), async (req, res) => {
   try { const results = await Promise.all(req.body.events.map(handleEvent)); res.json(results); } catch (e) { console.error(e); res.status(500).end(); }
 });
@@ -105,13 +129,13 @@ async function handleEvent(event) {
   const userId = event.source.userId || 'unknown';
   const s = getUser(userId);
 
-  // Show the start hint only once when user adds the bot
   if (event.type === 'follow') {
+    // Only show the start hint once when user adds the bot
     return client.replyMessage(event.replyToken, [{ type: 'text', text: t('EN', 'START_HINT') }]);
   }
 
   if (event.type === 'postback') {
-    const data = parsePostback(event.postback?.data);
+    const data = parsePostback(event.postback.data);
 
     if (data.lang) { s.lang = data.lang; return client.replyMessage(event.replyToken, [ { type: 'text', text: t(s.lang, 'GREET') }, quickReplyBranch(s.lang) ]); }
     if (data.branch) { s.branch = data.branch; return client.replyMessage(event.replyToken, [ quickReplyDate(s.lang) ]); }
@@ -151,7 +175,7 @@ async function handleEvent(event) {
     if (!s.service) { s.service = textRaw; return client.replyMessage(event.replyToken, [ askName(s.lang || 'EN') ]); }
     if (!s.name) { s.name = textRaw; return client.replyMessage(event.replyToken, [ askPhone(s.lang || 'EN') ]); }
     if (!s.phone) { s.phone = textRaw; return client.replyMessage(event.replyToken, [ askDiscount(s.lang || 'EN') ]); }
-    if (!s.discount) { const l = textRaw.toLowerCase(); const noWords = ['no', 'none', 'skip', '-', 'なし', 'ไม่ใช้', 'ไม่ใช้ส่วนลด', 'ไม่มี']; s.discount = noWords.includes(l) ? '' : textRaw; return client.replyMessage(event.replyToken, [ confirmationFlex(s.lang || 'EN', s) ]); }
+    if (!s.discount) { const text = textRaw.toLowerCase(); const noWords = ['no', 'none', 'skip', '-', 'なし', 'ไม่ใช้', 'ไม่ใช้ส่วนลด', 'ไม่มี']; s.discount = noWords.includes(text) ? '' : textRaw; return client.replyMessage(event.replyToken, [ confirmationFlex(s.lang || 'EN', s) ]); }
 
     // After completion, don't spam
     if (s.completed) { return null; }
@@ -161,7 +185,8 @@ async function handleEvent(event) {
 
 function parsePostback(data) {
   if (!data) return {};
-  try { const params = new URLSearchParams(data); const out = {}; for (const [k, v] of params.entries()) out[k] = v; return out; } catch (e) { const out = {}; (data || '').split('&').forEach(p => { const [k, v] = p.split('='); if (k) out[k] = decodeURIComponent(v || ''); }); return out; }
+  try { const params = new URLSearchParams(data); const out = {}; for (const [k, v] of params.entries()) out[k] = v; return out; }
+  catch (e) { const out = {}; (data || '').split('&').forEach(p => { const [k, v] = p.split('='); if (k) out[k] = decodeURIComponent(v || ''); }); return out; }
 }
 
 const PORT = process.env.PORT || 3000; app.listen(PORT, () => console.log('LINE bot listening on ' + PORT));
