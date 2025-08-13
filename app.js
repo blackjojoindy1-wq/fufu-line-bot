@@ -1,6 +1,11 @@
-// LINE Booking Bot – Triggered Flow (Node.js)
-// Starts ONLY when user types one of: "book" (EN), "จอง" (TH), or "予約" (JP).
-// Also: after user confirms, sends a text summary + message that booking is received and will be reconfirmed, then registration link.
+// LINE Booking Bot – Triggered Flow (No Extra Reminders)
+// -----------------------------------------------------
+// ✅ Starts ONLY when user types one of: "book" (EN), "จอง" (TH), or "予約" (JP)
+// ✅ Sends the "how to book" hint ONLY on first add (follow event)
+// ✅ After booking confirmation, sends: received note + plain-text summary + registration link
+// ✅ DOES NOT re-send booking summary on subsequent random messages
+//
+// How to use: same as before. Replace your app.js with this file's contents.
 
 const express = require('express');
 const line = require('@line/bot-sdk');
@@ -24,15 +29,18 @@ const MENUS = {
 
 const REGISTRATION_FORM_URL = process.env.REGISTRATION_FORM_URL || '<<PASTE_YOUR_REGISTRATION_FORM_URL>>';
 
-const TRIGGER_REGEX = /(^|\s)(book|จอง|予約)(\s|$)/i; // words that start the flow
+// Trigger words to initiate booking
+const TRIGGER_REGEX = /(^|\s)(book|จอง|予約)(\s|$)/i;
 
 function getUser(ctx) {
-  if (!userState.has(ctx)) userState.set(ctx, { lang: null, branch: null });
+  if (!userState.has(ctx)) userState.set(ctx, baseState());
   return userState.get(ctx);
 }
-
-function resetUser(ctx) {
-  userState.set(ctx, { lang: null, branch: null, date: null, time: null, service: null, name: null, phone: null, discount: null });
+function baseState() {
+  return { lang: null, branch: null, date: null, time: null, service: null, name: null, phone: null, discount: null, completed: false };
+}
+function resetForNewBooking(ctx) {
+  userState.set(ctx, baseState());
   return userState.get(ctx);
 }
 
@@ -101,7 +109,7 @@ function t(lang, key) {
     },
 
     RECEIVED_PENDING: {
-      EN: 'We\'ve received your booking request. We will check availability and reconfirm with you shortly.',
+      EN: "We've received your booking request. We will check availability and reconfirm with you shortly.",
       JP: 'ご予約リクエストを受け付けました。空き状況を確認し、追ってご連絡いたします。',
       TH: 'เราได้รับคำขอจองของคุณแล้ว จะตรวจสอบคิวและยืนยันกลับให้โดยเร็วค่ะ',
     },
@@ -109,6 +117,12 @@ function t(lang, key) {
       EN: 'Booking summary',
       JP: 'ご予約サマリー',
       TH: 'สรุปรายละเอียดการจอง',
+    },
+
+    SHOW_MENU: {
+      EN: 'Here is the menu for your selected branch:',
+      JP: '選択したブランチのメニューはこちらです：',
+      TH: 'นี่คือเมนูของสาขาที่คุณเลือกค่ะ:',
     },
   };
   return copy[key][lang || 'EN'];
@@ -190,7 +204,7 @@ function askDiscount(lang) { return { type: 'text', text: t(lang, 'ASK_DISCOUNT'
 
 function showMenuForBranch(lang, branch) {
   const url = branch === 'THONGLOR' ? MENUS.THONGLOR : MENUS.PHROMPHONG;
-  return { type: 'text', text: `Here is the menu for your selected branch:\n${url}` };
+  return { type: 'text', text: `${t(lang, 'SHOW_MENU')}\n${url}` };
 }
 
 function buildSummaryText(lang, s) {
@@ -221,7 +235,7 @@ async function handleEvent(event) {
   const state = getUser(userId);
 
   if (event.type === 'follow') {
-    // Do NOT auto-start. Instruct user to type trigger words to begin.
+    // Only send the booking reminder ONCE when they add the bot.
     return client.replyMessage(event.replyToken, [{ type: 'text', text: t('EN', 'START_HINT') }]);
   }
 
@@ -256,6 +270,7 @@ async function handleEvent(event) {
 
     if (data.confirm) {
       if (data.confirm === 'YES') {
+        state.completed = true; // mark as completed so we don't keep sending summaries later
         const msgs = [
           { type: 'text', text: t(state.lang, 'RECEIVED_PENDING') },
           { type: 'text', text: buildSummaryText(state.lang, state) },
@@ -276,7 +291,7 @@ async function handleEvent(event) {
 
     // 1) Trigger: user types book/จอง/予約 → reset state & start
     if (TRIGGER_REGEX.test(text)) {
-      resetUser(userId);
+      resetForNewBooking(userId);
       return client.replyMessage(event.replyToken, [quickReplyLanguage()]);
     }
 
@@ -291,48 +306,47 @@ async function handleEvent(event) {
       return client.replyMessage(event.replyToken, [showMenuForBranch(state.lang || 'EN', state.branch)]);
     }
 
-    // 3) If language not chosen yet, ignore normal chats until triggered again
-    if (!state.lang) {
-      // Don’t auto-initiate; gently remind how to start
-      return client.replyMessage(event.replyToken, [{ type: 'text', text: t('EN', 'START_HINT') }]);
+    // 3) If user hasn't started a booking and it's not the follow event, stay quiet
+    if (!state.lang && !state.branch && !state.date && !state.time && !state.service) {
+      return Promise.resolve(null); // do not send reminders here
     }
 
-    // 4) Continue booking flow sequentially
+    // 4) Continue booking flow sequentially (only during an active flow)
     if (!state.branch) {
-      return client.replyMessage(event.replyToken, [quickReplyBranch(state.lang)]);
+      return client.replyMessage(event.replyToken, [quickReplyBranch(state.lang || 'EN')]);
     }
     if (!state.date) {
-      return client.replyMessage(event.replyToken, [quickReplyDate(state.lang)]);
+      return client.replyMessage(event.replyToken, [quickReplyDate(state.lang || 'EN')]);
     }
     if (!state.time) {
       if (/^\d{1,2}:\d{2}$/.test(text)) {
         state.time = text;
-        return client.replyMessage(event.replyToken, [askService(state.lang)]);
+        return client.replyMessage(event.replyToken, [askService(state.lang || 'EN')]);
       }
-      return client.replyMessage(event.replyToken, [quickReplyTime(state.lang)]);
+      return client.replyMessage(event.replyToken, [quickReplyTime(state.lang || 'EN')]);
     }
     if (!state.service) {
       state.service = text; // free text (Color, Treatment, etc.)
-      return client.replyMessage(event.replyToken, [askName(state.lang)]);
+      return client.replyMessage(event.replyToken, [askName(state.lang || 'EN')]);
     }
     if (!state.name) {
       state.name = text;
-      return client.replyMessage(event.replyToken, [askPhone(state.lang)]);
+      return client.replyMessage(event.replyToken, [askPhone(state.lang || 'EN')]);
     }
     if (!state.phone) {
       state.phone = text;
-      return client.replyMessage(event.replyToken, [askDiscount(state.lang)]);
+      return client.replyMessage(event.replyToken, [askDiscount(state.lang || 'EN')]);
     }
     if (!state.discount) {
       state.discount = text === '-' ? '' : text;
-      // Send Flex summary for confirmation with buttons
+      // Send one-time Flex summary for confirmation with buttons
       return client.replyMessage(event.replyToken, [
         {
           type: 'flex',
-          altText: t(state.lang, 'CONFIRM_TITLE'),
+          altText: t(state.lang || 'EN', 'CONFIRM_TITLE'),
           contents: {
             type: 'bubble',
-            header: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: t(state.lang, 'CONFIRM_TITLE'), weight: 'bold', size: 'md' }] },
+            header: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: t(state.lang || 'EN', 'CONFIRM_TITLE'), weight: 'bold', size: 'md' }] },
             body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: [
               { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Branch', flex: 2 }, { type: 'text', text: (state.branch === 'THONGLOR' ? 'Thong Lo' : 'Phrom Phong'), flex: 5 }] },
               { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Date', flex: 2 }, { type: 'text', text: state.date || '-', flex: 5 }] },
@@ -351,8 +365,10 @@ async function handleEvent(event) {
       ]);
     }
 
-    // After discount collected, any next message triggers summary again
-    return client.replyMessage(event.replyToken, [{ type: 'text', text: buildSummaryText(state.lang, state) }]);
+    // 5) If booking already completed, do not re-send summaries on random messages
+    if (state.completed) {
+      return Promise.resolve(null);
+    }
   }
 
   return Promise.resolve(null);
