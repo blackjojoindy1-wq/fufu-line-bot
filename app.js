@@ -1,387 +1,547 @@
-// LINE Booking Bot – Triggered Flow (No Extra Reminders)
-// -----------------------------------------------------
-// ✅ Starts ONLY when user types one of: "book" (EN), "จอง" (TH), or "予約" (JP)
-// ✅ Sends the "how to book" hint ONLY on first add (follow event)
-// ✅ After booking confirmation, sends: received note + plain-text summary + registration link
-// ✅ DOES NOT re-send booking summary on subsequent random messages
-//
-// How to use: same as before. Replace your app.js with this file's contents.
+/**
+ * LINE Booking Bot – Quick Replies (Node.js)
+ * ------------------------------------------------------------
+ * Features
+ * - Starts booking flow ONLY when user types one of: "book", "จอง", "予約" (case-insensitive)
+ * - On first add (follow event), sends a single friendly how-to-book reminder
+ * - Multilingual UI copy (English, Thai, Japanese) 
+ * - Collects: Language → Branch → Date → Time → Menu → Name → Phone → (Optional Discount)
+ * - Shows correct Menu links per branch
+ * - After user confirms, shows registration buttons per-branch + guidance (New vs Existing customer)
+ * - Tells the customer they can consult a colorist anytime (before and after flow)
+ * - Displays a clean text summary at the end and says booking is received (pending confirmation)
+ * - Avoids resending the booking summary for any subsequent messages after completion
+ *
+ * Notes
+ * - This sample uses an in-memory session store for simplicity. For production, replace with Redis/DB.
+ * - Requires: LINE_CHANNEL_SECRET, LINE_CHANNEL_ACCESS_TOKEN environment variables.
+ * - Run: `npm i express body-parser @line/bot-sdk` and then `node index.js`.
+ */
 
 const express = require('express');
-const line = require('@line/bot-sdk');
+const bodyParser = require('body-parser');
+const { Client, middleware, validateSignature } = require('@line/bot-sdk');
 
+// ----- Config -----
 const config = {
-  channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
-  channelSecret: process.env.CHANNEL_SECRET,
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+  channelSecret: process.env.LINE_CHANNEL_SECRET,
 };
 
-const client = new line.Client(config);
+const client = new Client(config);
 const app = express();
+app.use(bodyParser.json({ verify: rawBodySaver }));
 
-// Simple in-memory state store. Replace with a DB for production.
-const userState = new Map();
-
-// ===== Utilities =====
-const MENUS = {
-  THONGLOR: 'https://fufuhaircolor.com/thong-lo-%7C-menu',
-  PHROMPHONG: 'https://fufuhaircolor.com/phrom-phong-%7C-menu',
-};
-
-const REGISTRATION_FORM_URL = process.env.REGISTRATION_FORM_URL || '<<PASTE_YOUR_REGISTRATION_FORM_URL>>';
-
-// Trigger words to initiate booking
-const TRIGGER_REGEX = /(^|\s)(book|จอง|予約)(\s|$)/i;
-
-function getUser(ctx) {
-  if (!userState.has(ctx)) userState.set(ctx, baseState());
-  return userState.get(ctx);
-}
-function baseState() {
-  return { lang: null, branch: null, date: null, time: null, service: null, name: null, phone: null, discount: null, completed: false };
-}
-function resetForNewBooking(ctx) {
-  userState.set(ctx, baseState());
-  return userState.get(ctx);
+function rawBodySaver(req, res, buf) {
+  req.rawBody = buf;
 }
 
-function t(lang, key) {
-  const copy = {
-    START_HINT: {
-      EN: "Hi! Type 'book' to start a booking. / พิมพ์ 'จอง' เพื่อเริ่มจอง / '予約' で開始",
-      JP: "こんにちは！ 'book' または '予約' と送ると予約が開始します。/ 'จอง' でもOK",
-      TH: "สวัสดีค่ะ! พิมพ์คำว่า 'จอง' หรือ 'book' เพื่อเริ่มจองได้เลย / พิมพ์ '予約' ก็ได้",
-    },
-    GREET: {
-      EN: 'Hello! Please select your preferred language.',
-      JP: 'こんにちは！ご希望の言語をお選びください。',
-      TH: 'สวัสดีค่ะ! กรุณาเลือกภาษาที่ต้องการค่ะ',
-    },
-    CHOOSE_BRANCH: {
-      EN: 'Please choose your preferred branch.',
-      JP: 'ご希望のブランチをお選びください。',
-      TH: 'กรุณาเลือกสาขาที่ต้องการค่ะ',
-    },
-    BRANCH_THONGLOR: { EN: 'Thong Lo', JP: 'Thong Lo', TH: 'ทองหล่อ' },
-    BRANCH_PHROMPHONG: { EN: 'Phrom Phong', JP: 'Phrom Phong', TH: 'พร้อมพงษ์' },
-
-    ASK_DATE: {
-      EN: 'Please select the date that works best for you.',
-      JP: 'ご都合の良い日付をお選びください。',
-      TH: 'กรุณาเลือกวันที่ที่สะดวกที่สุดค่ะ',
-    },
-    ASK_TIME: {
-      EN: 'Please select the time that works best for you.',
-      JP: 'ご都合の良い時間をお選びください。',
-      TH: 'กรุณาเลือกเวลาที่สะดวกที่สุดค่ะ',
-    },
-
-    ASK_SERVICE: {
-      EN: 'Which hair service or treatment would you like to do?',
-      JP: 'ご希望のヘアサービスやトリートメントをお知らせください。',
-      TH: 'ต้องการทำบริการทำผมหรือทรีตเมนต์แบบไหนคะ?',
-    },
-    NEED_MENU: {
-      EN: 'If you need to see our menu, please tell us your preferred branch.',
-      JP: 'メニューをご覧になりたい場合は、ご希望のブランチを教えてください。',
-      TH: 'หากต้องการดูเมนู กรุณาแจ้งสาขาที่ต้องการก่อนค่ะ',
-    },
-
-    ASK_NAME: {
-      EN: 'Please provide your name in English.',
-      JP: '英語でお名前をご記入ください。',
-      TH: 'กรุณากรอกชื่อเป็นภาษาอังกฤษค่ะ',
-    },
-    ASK_PHONE: {
-      EN: 'Please provide your contact number.',
-      JP: 'ご連絡先の電話番号をご記入ください。',
-      TH: 'กรุณากรอกหมายเลขโทรศัพท์ที่ติดต่อได้ค่ะ',
-    },
-    ASK_DISCOUNT: {
-      EN: 'Any discount or promotion code to use? (Optional)',
-      JP: 'ご利用の割引・プロモーションコードはありますか？（任意）',
-      TH: 'มีโค้ดส่วนลดหรือโปรโมชันต้องการใช้ไหมคะ (ไม่บังคับ)',
-    },
-
-    CONFIRM_TITLE: {
-      EN: 'Please confirm your booking details',
-      JP: 'ご予約内容のご確認',
-      TH: 'กรุณายืนยันรายละเอียดการจองค่ะ',
-    },
-
-    RECEIVED_PENDING: {
-      EN: "We've received your booking request. We will check availability and reconfirm with you shortly.",
-      JP: 'ご予約リクエストを受け付けました。空き状況を確認し、追ってご連絡いたします。',
-      TH: 'เราได้รับคำขอจองของคุณแล้ว จะตรวจสอบคิวและยืนยันกลับให้โดยเร็วค่ะ',
-    },
-    SUMMARY_TITLE: {
-      EN: 'Booking summary',
-      JP: 'ご予約サマリー',
-      TH: 'สรุปรายละเอียดการจอง',
-    },
-
-    SHOW_MENU: {
-      EN: 'Here is the menu for your selected branch:',
-      JP: '選択したブランチのメニューはこちらです：',
-      TH: 'นี่คือเมนูของสาขาที่คุณเลือกค่ะ:',
-    },
-  };
-  return copy[key][lang || 'EN'];
-}
-
-// ===== Message Builders =====
-function quickReplyLanguage() {
-  return {
-    type: 'text',
-    text: 'Select language / 言語を選択 / เลือกภาษา',
-    quickReply: {
-      items: [
-        { type: 'action', action: { type: 'postback', label: 'English', data: 'lang=EN' } },
-        { type: 'action', action: { type: 'postback', label: '日本語', data: 'lang=JP' } },
-        { type: 'action', action: { type: 'postback', label: 'ไทย', data: 'lang=TH' } },
-      ],
-    },
-  };
-}
-
-function quickReplyBranch(lang) {
-  return {
-    type: 'text',
-    text: t(lang, 'CHOOSE_BRANCH'),
-    quickReply: {
-      items: [
-        { type: 'action', action: { type: 'postback', label: t(lang, 'BRANCH_THONGLOR'), data: 'branch=THONGLOR' } },
-        { type: 'action', action: { type: 'postback', label: t(lang, 'BRANCH_PHROMPHONG'), data: 'branch=PHROMPHONG' } },
-      ],
-    },
-  };
-}
-
-function quickReplyDate(lang) {
-  return {
-    type: 'text',
-    text: t(lang, 'ASK_DATE'),
-    quickReply: {
-      items: [
-        { type: 'action', action: { type: 'datetimepicker', label: 'Pick date', data: 'pick=date', mode: 'date' } },
-      ],
-    },
-  };
-}
-
-function quickReplyTime(lang) {
-  return {
-    type: 'text',
-    text: t(lang, 'ASK_TIME'),
-    quickReply: {
-      items: [
-        { type: 'action', action: { type: 'postback', label: '10:00', data: 'time=10:00' } },
-        { type: 'action', action: { type: 'postback', label: '13:00', data: 'time=13:00' } },
-        { type: 'action', action: { type: 'postback', label: '16:00', data: 'time=16:00' } },
-        { type: 'action', action: { type: 'postback', label: 'Other', data: 'time=OTHER' } },
-      ],
-    },
-  };
-}
-
-function askService(lang) {
-  return {
-    type: 'text',
-    text: `${t(lang, 'ASK_SERVICE')}\n\n${t(lang, 'NEED_MENU')}`,
-    quickReply: {
-      items: [
-        { type: 'action', action: { type: 'message', label: 'Color', text: 'Color' } },
-        { type: 'action', action: { type: 'message', label: 'Bleach on Color', text: 'Bleach on Color' } },
-        { type: 'action', action: { type: 'message', label: 'Treatment', text: 'Treatment' } },
-        { type: 'action', action: { type: 'message', label: 'Menu', text: 'Menu' } },
-      ],
-    },
-  };
-}
-
-function askName(lang) { return { type: 'text', text: t(lang, 'ASK_NAME') }; }
-function askPhone(lang) { return { type: 'text', text: t(lang, 'ASK_PHONE') }; }
-function askDiscount(lang) { return { type: 'text', text: t(lang, 'ASK_DISCOUNT') }; }
-
-function showMenuForBranch(lang, branch) {
-  const url = branch === 'THONGLOR' ? MENUS.THONGLOR : MENUS.PHROMPHONG;
-  return { type: 'text', text: `${t(lang, 'SHOW_MENU')}\n${url}` };
-}
-
-function buildSummaryText(lang, s) {
-  const branchLabel = s.branch === 'THONGLOR' ? 'Thong Lo' : 'Phrom Phong';
-  return `${t(lang, 'SUMMARY_TITLE')}\n` +
-    `Branch: ${branchLabel}\n` +
-    `Date: ${s.date || '-'}\n` +
-    `Time: ${s.time || '-'}\n` +
-    `Service: ${s.service || '-'}\n` +
-    `Name: ${s.name || '-'}\n` +
-    `Phone: ${s.phone || '-'}\n` +
-    `Discount: ${s.discount || '-'}`;
-}
-
-// ===== Handlers =====
-app.post('/callback', line.middleware(config), async (req, res) => {
-  try {
-    const results = await Promise.all(req.body.events.map(handleEvent));
-    res.json(results);
-  } catch (e) {
-    console.error(e);
-    res.status(500).end();
+// Verify LINE signature manually to avoid accidental 200s
+app.post('/webhook', (req, res) => {
+  const signature = req.headers['x-line-signature'];
+  if (!validateSignature(req.rawBody, config.channelSecret, signature)) {
+    return res.status(401).send('Unauthorized');
   }
+  Promise
+    .all((req.body.events || []).map(handleEvent))
+    .then(() => res.status(200).end())
+    .catch((err) => {
+      console.error(err);
+      res.status(500).end();
+    });
 });
 
-async function handleEvent(event) {
-  const userId = event.source.userId || 'unknown';
-  const state = getUser(userId);
+// ----- In-memory session store -----
+const SESSIONS = new Map();
+const DONE_USERS = new Set(); // to prevent resending summaries for later messages
 
-  if (event.type === 'follow') {
-    // Only send the booking reminder ONCE when they add the bot.
-    return client.replyMessage(event.replyToken, [{ type: 'text', text: t('EN', 'START_HINT') }]);
+function getSession(userId) {
+  if (!SESSIONS.has(userId)) {
+    SESSIONS.set(userId, {
+      lang: null,           // 'en' | 'th' | 'ja'
+      step: null,           // current step key
+      data: {               // collected fields
+        branch: null,       // 'Thong Lo' | 'Phrom Phong'
+        date: null,         // YYYY-MM-DD
+        time: null,         // HH:MM
+        menu: null,         // text
+        name: null,         // text (English)
+        phone: null,        // digits
+        discount: null,     // text (optional)
+      },
+      started: false,
+      completed: false,
+    });
+  }
+  return SESSIONS.get(userId);
+}
+
+function resetSession(userId) {
+  SESSIONS.delete(userId);
+}
+
+// ----- Localization (GUI text only) -----
+const T = {
+  en: {
+    consult_anytime: "You can chat here to consult our colorists anytime.",
+    start_title: "Welcome to fufu Hair Color Salon",
+    start_howto: "Type 'book' to start your booking in English, 日本語, or ไทย.",
+    pick_language: "Choose your language",
+    pick_branch: "Which branch would you like?",
+    thonglo: "Thong Lo",
+    phromphong: "Phrom Phong",
+    pick_date: "Pick your preferred DATE",
+    pick_time: "Pick your preferred TIME",
+    pick_menu: "Which hair menu/treatment would you like?",
+    see_menu: "See Menu",
+    menu_note: "You can view the menu via the button below.",
+    thonglo_menu: "Thong Lo Menu",
+    phromphong_menu: "Phrom Phong Menu",
+    ask_name: "What is your name (English)?",
+    ask_phone: "What is your contact phone number?",
+    ask_discount: "Any discount code or program to use? (type 'no' if none)",
+    confirm_title: "Please confirm your booking details",
+    confirm_button: "Confirm Booking",
+    change_button: "Start Over",
+    received_title: "Booking received",
+    received_body: "We will check availability and confirm shortly.",
+    summary_header: "Booking Summary",
+    registration_header: "New Customer Registration",
+    registration_desc: "If you are NEW, please complete registration. Existing customers do not need to register again.",
+    register_thonglo: "Register – Thong Lo",
+    register_phromphong: "Register – Phrom Phong",
+    done_hint: "Thank you! If you have questions, our colorists are here to help anytime.",
+  },
+  th: {
+    consult_anytime: "หากมีข้อสงสัย ปรึกษาช่างสีผมได้ตลอดเวลาที่แชตนี้นะคะ",
+    start_title: "ยินดีต้อนรับสู่ fufu Hair Color Salon",
+    start_howto: "พิมพ์คำว่า 'จอง' เพื่อเริ่มการจอง (รองรับ English / 日本語 / ไทย)",
+    pick_language: "กรุณาเลือกภาษา",
+    pick_branch: "ต้องการจองสาขาไหนคะ?",
+    thonglo: "ทองหล่อ",
+    phromphong: "พร้อมพงษ์",
+    pick_date: "กรุณาเลือกวันที่ที่สะดวก",
+    pick_time: "กรุณาเลือกเวลาที่สะดวก",
+    pick_menu: "ต้องการทำบริการเมนูใดคะ?",
+    see_menu: "ดูเมนู",
+    menu_note: "สามารถกดปุ่มด้านล่างเพื่อดูเมนูได้ค่ะ",
+    thonglo_menu: "เมนู ทองหล่อ",
+    phromphong_menu: "เมนู พร้อมพงษ์",
+    ask_name: "ขอทราบชื่อเป็นภาษาอังกฤษค่ะ",
+    ask_phone: "รบกวนเบอร์โทรติดต่อค่ะ",
+    ask_discount: "มีโค้ดส่วนลดหรืองานโปรฯ ไหมคะ (พิมพ์ 'ไม่มี' ถ้าไม่มี)",
+    confirm_title: "โปรดตรวจสอบรายละเอียดการจอง",
+    confirm_button: "ยืนยันการจอง",
+    change_button: "เริ่มใหม่",
+    received_title: "รับคำขอจองเรียบร้อย",
+    received_body: "ทางร้านจะตรวจสอบคิวและยืนยันกลับอีกครั้งค่ะ",
+    summary_header: "สรุปการจอง",
+    registration_header: "แบบฟอร์มลงทะเบียนลูกค้าใหม่",
+    registration_desc: "หากเป็นลูกค้าใหม่ กรุณากรอกแบบฟอร์ม ลูกค้าเก่าไม่ต้องลงทะเบียนซ้ำ ขอบคุณค่ะ",
+    register_thonglo: "ลงทะเบียน – ทองหล่อ",
+    register_phromphong: "ลงทะเบียน – พร้อมพงษ์",
+    done_hint: "ขอบคุณค่ะ หากมีคำถาม ปรึกษาช่างได้ตลอดเวลาที่นี่",
+  },
+  ja: {
+    consult_anytime: "ご不明点は、いつでもこちらのチャットでカラーリストにご相談ください。",
+    start_title: "fufu Hair Color Salon へようこそ",
+    start_howto: "ご予約は『予約』と入力してください（English / 日本語 / ไทย 対応）",
+    pick_language: "言語をお選びください",
+    pick_branch: "ご希望の店舗はどちらですか？",
+    thonglo: "トンロー店",
+    phromphong: "プロンポン店",
+    pick_date: "ご希望の日付をお選びください",
+    pick_time: "ご希望の時間をお選びください",
+    pick_menu: "ご希望のメニュー／トリートメントは？",
+    see_menu: "メニューを見る",
+    menu_note: "下のボタンからメニューをご確認いただけます。",
+    thonglo_menu: "トンロー店メニュー",
+    phromphong_menu: "プロンポン店メニュー",
+    ask_name: "お名前（英語表記）を教えてください",
+    ask_phone: "ご連絡先電話番号を教えてください",
+    ask_discount: "割引コードやご利用予定のプロモはありますか？（なければ『なし』）",
+    confirm_title: "予約内容をご確認ください",
+    confirm_button: "予約を確定",
+    change_button: "やり直す",
+    received_title: "予約リクエストを受け付けました",
+    received_body: "空き状況を確認の上、追ってご連絡いたします。",
+    summary_header: "予約内容",
+    registration_header: "新規お客様のご登録",
+    registration_desc: "新規のお客様はご登録をお願いいたします。既存のお客様は再登録不要です。",
+    register_thonglo: "登録 – トンロー店",
+    register_phromphong: "登録 – プロンポン店",
+    done_hint: "ありがとうございます。ご質問はいつでもお気軽にご相談ください。",
+  },
+};
+
+// Branch constants & URLs
+const BRANCH = {
+  THONGLO: 'Thong Lo',
+  PHROMPHONG: 'Phrom Phong',
+};
+const MENU_URL = {
+  [BRANCH.THONGLO]: 'https://fufuhaircolor.com/thong-lo-%7C-menu',
+  [BRANCH.PHROMPHONG]: 'https://fufuhaircolor.com/phrom-phong-%7C-menu',
+};
+const REG_URL = {
+  [BRANCH.THONGLO]: 'https://forms.gle/pSEPMK6E77a9XTKZ8',
+  [BRANCH.PHROMPHONG]: 'https://forms.gle/bmNKyN6Yo4w8poN76',
+};
+
+// Triggers to begin booking
+const TRIGGERS = [/^book$/i, /^จอง$/i, /^予約$/];
+
+// ----- Event handler -----
+async function handleEvent(event) {
+  const type = event.type;
+  const userId = event.source?.userId;
+  if (!userId) return Promise.resolve(null);
+
+  // On first add: one-time how-to-book reminder
+  if (type === 'follow') {
+    const lang = 'en';
+    const t = T[lang];
+    return client.replyMessage(event.replyToken, [
+      text(`${t.start_title}\n${t.start_howto}`),
+      text(t.consult_anytime),
+    ]);
   }
 
-  if (event.type === 'postback') {
-    const data = parseQuery(event.postback.data);
+  if (type !== 'message' && type !== 'postback') return Promise.resolve(null);
 
-    if (data.lang) {
-      state.lang = data.lang; // EN, JP, TH
-      return client.replyMessage(event.replyToken, [
-        { type: 'text', text: t(state.lang, 'GREET') },
-        quickReplyBranch(state.lang),
-      ]);
+  const session = getSession(userId);
+
+  // Always allow retrigger if user sends a trigger word
+  if (type === 'message' && event.message.type === 'text') {
+    const msg = (event.message.text || '').trim();
+    if (TRIGGERS.some((re) => re.test(msg))) {
+      DONE_USERS.delete(userId); // user wants a new booking
+      resetSession(userId);
+      const s = getSession(userId);
+      s.started = true;
+      s.step = 'pick_language';
+      return askLanguage(event.replyToken);
     }
+  }
 
-    if (data.branch) {
-      state.branch = data.branch; // THONGLOR / PHROMPHONG
-      return client.replyMessage(event.replyToken, [quickReplyDate(state.lang)]);
-    }
-
-    if (data.pick === 'date' && event.postback.params?.date) {
-      state.date = event.postback.params.date; // YYYY-MM-DD
-      return client.replyMessage(event.replyToken, [quickReplyTime(state.lang)]);
-    }
-
-    if (data.time) {
-      if (data.time === 'OTHER') {
-        return client.replyMessage(event.replyToken, [{ type: 'text', text: t(state.lang, 'ASK_TIME') + ' (Please type your preferred time)' }]);
-      }
-      state.time = data.time;
-      return client.replyMessage(event.replyToken, [askService(state.lang)]);
-    }
-
-    if (data.confirm) {
-      if (data.confirm === 'YES') {
-        state.completed = true; // mark as completed so we don't keep sending summaries later
-        const msgs = [
-          { type: 'text', text: t(state.lang, 'RECEIVED_PENDING') },
-          { type: 'text', text: buildSummaryText(state.lang, state) },
-          { type: 'text', text: 'Registration form: ' + REGISTRATION_FORM_URL },
-        ];
-        return client.replyMessage(event.replyToken, msgs);
-      }
-      if (data.confirm === 'EDIT') {
-        return client.replyMessage(event.replyToken, [quickReplyBranch(state.lang)]);
-      }
-    }
-
+  // If user previously completed booking, do NOT send summaries again for any random messages
+  if (session.completed) {
+    // Optionally: reply something short ONLY if they explicitly type trigger again (handled above)
     return Promise.resolve(null);
   }
 
-  if (event.type === 'message' && event.message.type === 'text') {
-    const text = (event.message.text || '').trim();
+  // Route steps
+  if (type === 'message' && event.message.type === 'text' && !session.started) {
+    // Ignore free chat until they type trigger word; but still be helpful about consulting
+    return client.replyMessage(event.replyToken, [text("Hi! Type 'book' / 'จอง' / '予約' to start booking.\nYou can also consult our colorists here anytime.")]);
+  }
 
-    // 1) Trigger: user types book/จอง/予約 → reset state & start
-    if (TRIGGER_REGEX.test(text)) {
-      resetForNewBooking(userId);
-      return client.replyMessage(event.replyToken, [quickReplyLanguage()]);
-    }
-
-    // 2) Menu intent (independent; usable during flow)
-    if (/\bmenu\b/i.test(text) || /メニュー/.test(text) || /เมนู/.test(text)) {
-      if (!state.branch) {
-        return client.replyMessage(event.replyToken, [
-          { type: 'text', text: t(state.lang || 'EN', 'NEED_MENU') },
-          quickReplyBranch(state.lang || 'EN'),
-        ]);
-      }
-      return client.replyMessage(event.replyToken, [showMenuForBranch(state.lang || 'EN', state.branch)]);
-    }
-
-    // 3) If user hasn't started a booking and it's not the follow event, stay quiet
-    if (!state.lang && !state.branch && !state.date && !state.time && !state.service) {
-      return Promise.resolve(null); // do not send reminders here
-    }
-
-    // 4) Continue booking flow sequentially (only during an active flow)
-    if (!state.branch) {
-      return client.replyMessage(event.replyToken, [quickReplyBranch(state.lang || 'EN')]);
-    }
-    if (!state.date) {
-      return client.replyMessage(event.replyToken, [quickReplyDate(state.lang || 'EN')]);
-    }
-    if (!state.time) {
-      if (/^\d{1,2}:\d{2}$/.test(text)) {
-        state.time = text;
-        return client.replyMessage(event.replyToken, [askService(state.lang || 'EN')]);
-      }
-      return client.replyMessage(event.replyToken, [quickReplyTime(state.lang || 'EN')]);
-    }
-    if (!state.service) {
-      state.service = text; // free text (Color, Treatment, etc.)
-      return client.replyMessage(event.replyToken, [askName(state.lang || 'EN')]);
-    }
-    if (!state.name) {
-      state.name = text;
-      return client.replyMessage(event.replyToken, [askPhone(state.lang || 'EN')]);
-    }
-    if (!state.phone) {
-      state.phone = text;
-      return client.replyMessage(event.replyToken, [askDiscount(state.lang || 'EN')]);
-    }
-    if (!state.discount) {
-      state.discount = text === '-' ? '' : text;
-      // Send one-time Flex summary for confirmation with buttons
-      return client.replyMessage(event.replyToken, [
-        {
-          type: 'flex',
-          altText: t(state.lang || 'EN', 'CONFIRM_TITLE'),
-          contents: {
-            type: 'bubble',
-            header: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: t(state.lang || 'EN', 'CONFIRM_TITLE'), weight: 'bold', size: 'md' }] },
-            body: { type: 'box', layout: 'vertical', spacing: 'sm', contents: [
-              { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Branch', flex: 2 }, { type: 'text', text: (state.branch === 'THONGLOR' ? 'Thong Lo' : 'Phrom Phong'), flex: 5 }] },
-              { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Date', flex: 2 }, { type: 'text', text: state.date || '-', flex: 5 }] },
-              { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Time', flex: 2 }, { type: 'text', text: state.time || '-', flex: 5 }] },
-              { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Service', flex: 2 }, { type: 'text', text: state.service || '-', flex: 5 }] },
-              { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Name', flex: 2 }, { type: 'text', text: state.name || '-', flex: 5 }] },
-              { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Phone', flex: 2 }, { type: 'text', text: state.phone || '-', flex: 5 }] },
-              { type: 'box', layout: 'baseline', contents: [{ type: 'text', text: 'Discount', flex: 2 }, { type: 'text', text: state.discount || '-', flex: 5 }] },
-            ] },
-            footer: { type: 'box', layout: 'horizontal', spacing: 'md', contents: [
-              { type: 'button', style: 'primary', action: { type: 'postback', label: '✅ Confirm', data: 'confirm=YES' } },
-              { type: 'button', style: 'secondary', action: { type: 'postback', label: '✏️ Edit', data: 'confirm=EDIT' } },
-            ] },
-          },
-        },
-      ]);
-    }
-
-    // 5) If booking already completed, do not re-send summaries on random messages
-    if (state.completed) {
-      return Promise.resolve(null);
+  if (session.step === 'pick_language') {
+    if (type === 'postback' && event.postback.data.startsWith('lang=')) {
+      const lang = event.postback.data.split('=')[1];
+      session.lang = ['en', 'th', 'ja'].includes(lang) ? lang : 'en';
+      session.step = 'pick_branch';
+      return askBranch(event.replyToken, session.lang);
+    } else if (type === 'message' && event.message.type === 'text') {
+      // Allow manual language text input
+      const input = event.message.text.toLowerCase();
+      if (input.includes('thai') || input.includes('ไทย')) session.lang = 'th';
+      else if (input.includes('jap') || input.includes('日本')) session.lang = 'ja';
+      else session.lang = 'en';
+      session.step = 'pick_branch';
+      return askBranch(event.replyToken, session.lang);
+    } else {
+      return askLanguage(event.replyToken);
     }
   }
 
-  return Promise.resolve(null);
+  const t = T[session.lang || 'en'];
+
+  if (session.step === 'pick_branch') {
+    if (type === 'postback' && event.postback.data.startsWith('branch=')) {
+      const val = decodeURIComponent(event.postback.data.split('=')[1]);
+      session.data.branch = val;
+      session.step = 'pick_date';
+      return askDate(event.replyToken, session.lang);
+    }
+    if (type === 'message' && event.message.type === 'text') {
+      const m = event.message.text.toLowerCase();
+      if (m.includes('thong')) session.data.branch = BRANCH.THONGLO;
+      else if (m.includes('phrom') || m.includes('prom')) session.data.branch = BRANCH.PHROMPHONG;
+      if (session.data.branch) {
+        session.step = 'pick_date';
+        return askDate(event.replyToken, session.lang);
+      }
+      return askBranch(event.replyToken, session.lang);
+    }
+  }
+
+  if (session.step === 'pick_date') {
+    if (type === 'postback' && event.postback.params?.date) {
+      session.data.date = event.postback.params.date; // YYYY-MM-DD
+      session.step = 'pick_time';
+      return askTime(event.replyToken, session.lang);
+    }
+    if (type === 'message' && event.message.type === 'text') {
+      // naive date capture (YYYY-MM-DD)
+      const m = event.message.text.trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(m)) {
+        session.data.date = m;
+        session.step = 'pick_time';
+        return askTime(event.replyToken, session.lang);
+      }
+      return askDate(event.replyToken, session.lang);
+    }
+  }
+
+  if (session.step === 'pick_time') {
+    if (type === 'postback' && event.postback.params?.time) {
+      session.data.time = event.postback.params.time; // HH:MM
+      session.step = 'pick_menu';
+      return askMenu(event.replyToken, session.lang, session.data.branch);
+    }
+    if (type === 'message' && event.message.type === 'text') {
+      const m = event.message.text.trim();
+      if (/^\d{2}:\d{2}$/.test(m)) {
+        session.data.time = m;
+        session.step = 'pick_menu';
+        return askMenu(event.replyToken, session.lang, session.data.branch);
+      }
+      return askTime(event.replyToken, session.lang);
+    }
+  }
+
+  if (session.step === 'pick_menu') {
+    if (type === 'message' && event.message.type === 'text') {
+      session.data.menu = event.message.text.trim();
+      session.step = 'ask_name';
+      return client.replyMessage(event.replyToken, [text(t.ask_name)]);
+    }
+  }
+
+  if (session.step === 'ask_name') {
+    if (type === 'message' && event.message.type === 'text') {
+      session.data.name = event.message.text.trim();
+      session.step = 'ask_phone';
+      return client.replyMessage(event.replyToken, [text(t.ask_phone)]);
+    }
+  }
+
+  if (session.step === 'ask_phone') {
+    if (type === 'message' && event.message.type === 'text') {
+      const raw = event.message.text.replace(/[^0-9+]/g, '');
+      if (raw.length < 7) {
+        return client.replyMessage(event.replyToken, [text(t.ask_phone)]);
+      }
+      session.data.phone = raw;
+      session.step = 'ask_discount';
+      return client.replyMessage(event.replyToken, [text(t.ask_discount)]);
+    }
+  }
+
+  if (session.step === 'ask_discount') {
+    if (type === 'message' && event.message.type === 'text') {
+      const raw = event.message.text.trim();
+      if (/^(no|なし|ไม่มี)$/i.test(raw)) session.data.discount = null; else session.data.discount = raw;
+      session.step = 'confirm';
+      return showConfirm(event.replyToken, session.lang, session.data);
+    }
+  }
+
+  if (session.step === 'confirm') {
+    if (type === 'postback') {
+      if (event.postback.data === 'confirm=yes') {
+        session.completed = true;
+        DONE_USERS.add(userId);
+        // Send received + summary + registration buttons
+        const msgs = [
+          text(`${t.received_title}\n${t.received_body}`),
+          text(summaryText(session.lang, session.data, t.summary_header)),
+          registrationFlex(session.lang, session.data.branch),
+          text(t.done_hint + "\n" + t.consult_anytime),
+        ];
+        return client.replyMessage(event.replyToken, msgs);
+      } else if (event.postback.data === 'confirm=restart') {
+        resetSession(userId);
+        const s = getSession(userId);
+        s.started = true;
+        s.step = 'pick_language';
+        return askLanguage(event.replyToken);
+      }
+    }
+  }
+
+  // Default fallback (should rarely happen during flow)
+  return client.replyMessage(event.replyToken, [text(t.consult_anytime)]);
 }
 
-function parseQuery(q) {
-  const out = {};
-  (q || '').split('&').forEach(pair => {
-    const [k, v] = pair.split('=');
-    if (k) out[k] = decodeURIComponent(v || '');
-  });
-  return out;
+// ----- Step helpers -----
+function askLanguage(replyToken) {
+  const t = T.en; // show labels in all languages
+  return client.replyMessage(replyToken, [
+    text(`${t.start_title}\n${t.consult_anytime}`),
+    {
+      type: 'flex', altText: 'Choose your language', contents: {
+        type: 'bubble', body: {
+          type: 'box', layout: 'vertical', spacing: 'md', contents: [
+            { type: 'text', text: T.en.pick_language, weight: 'bold', size: 'md' },
+            { type: 'text', text: 'ภาษาไทย / English / 日本語', size: 'sm', color: '#888888' },
+          ]
+        },
+        footer: {
+          type: 'box', layout: 'vertical', spacing: 'sm', contents: [
+            btnPostback('English', 'lang=en'),
+            btnPostback('ไทย', 'lang=th'),
+            btnPostback('日本語', 'lang=ja'),
+          ]
+        }
+      }
+    }
+  ]);
 }
+
+function askBranch(replyToken, lang='en') {
+  const t = T[lang];
+  return client.replyMessage(replyToken, [
+    {
+      type: 'flex', altText: t.pick_branch, contents: {
+        type: 'bubble', body: {
+          type: 'box', layout: 'vertical', spacing: 'md', contents: [
+            { type: 'text', text: t.pick_branch, weight: 'bold' },
+          ]
+        }, footer: {
+          type: 'box', layout: 'vertical', spacing: 'sm', contents: [
+            btnPostback(t.thonglo, `branch=${encodeURIComponent(BRANCH.THONGLO)}`),
+            btnPostback(t.phromphong, `branch=${encodeURIComponent(BRANCH.PHROMPHONG)}`),
+          ]
+        }
+      }
+    }
+  ]);
+}
+
+function askDate(replyToken, lang='en') {
+  const t = T[lang];
+  return client.replyMessage(replyToken, [
+    {
+      type: 'text', text: `${t.pick_date}`,
+      quickReply: {
+        items: [
+          { type: 'action', action: { type: 'datetimepicker', label: 'Pick date', data: 'date=pick', mode: 'date' } }
+        ]
+      }
+    }
+  ]);
+}
+
+function askTime(replyToken, lang='en') {
+  const t = T[lang];
+  return client.replyMessage(replyToken, [
+    {
+      type: 'text', text: `${t.pick_time}`,
+      quickReply: {
+        items: [
+          { type: 'action', action: { type: 'datetimepicker', label: 'Pick time', data: 'time=pick', mode: 'time' } },
+          { type: 'action', action: { type: 'message', label: '09:00', text: '09:00' } },
+          { type: 'action', action: { type: 'message', label: '13:00', text: '13:00' } },
+          { type: 'action', action: { type: 'message', label: '17:00', text: '17:00' } },
+        ]
+      }
+    }
+  ]);
+}
+
+function askMenu(replyToken, lang='en', branch=BRANCH.THONGLO) {
+  const t = T[lang];
+  const menuUrl = MENU_URL[branch];
+  const label = (branch === BRANCH.THONGLO) ? t.thonglo_menu : t.phromphong_menu;
+  return client.replyMessage(replyToken, [
+    {
+      type: 'flex', altText: t.pick_menu, contents: {
+        type: 'bubble', body: {
+          type: 'box', layout: 'vertical', spacing: 'md', contents: [
+            { type: 'text', text: t.pick_menu, weight: 'bold' },
+            { type: 'text', text: t.menu_note, size: 'sm', color: '#888888', wrap: true },
+          ]
+        }, footer: {
+          type: 'box', layout: 'vertical', spacing: 'sm', contents: [
+            btnUri(label, menuUrl)
+          ]
+        }
+      }
+    }
+  ]);
+}
+
+function showConfirm(replyToken, lang='en', data) {
+  const t = T[lang];
+  const summary = summaryText(lang, data, t.summary_header);
+  return client.replyMessage(replyToken, [
+    {
+      type: 'flex', altText: t.confirm_title, contents: {
+        type: 'bubble', body: {
+          type: 'box', layout: 'vertical', spacing: 'md', contents: [
+            { type: 'text', text: t.confirm_title, weight: 'bold' },
+            { type: 'text', text: summary, wrap: true },
+          ]
+        }, footer: {
+          type: 'box', layout: 'vertical', spacing: 'sm', contents: [
+            btnPostback(t.confirm_button, 'confirm=yes'),
+            btnPostback(t.change_button, 'confirm=restart'),
+          ]
+        }
+      }
+    }
+  ]);
+}
+
+function registrationFlex(lang='en', branch=BRANCH.THONGLO) {
+  const t = T[lang];
+  const url = REG_URL[branch];
+  const label = (branch === BRANCH.THONGLO) ? t.register_thonglo : t.register_phromphong;
+  return {
+    type: 'flex', altText: t.registration_header, contents: {
+      type: 'bubble', body: {
+        type: 'box', layout: 'vertical', spacing: 'md', contents: [
+          { type: 'text', text: t.registration_header, weight: 'bold' },
+          { type: 'text', text: t.registration_desc, wrap: true },
+        ]
+      }, footer: {
+        type: 'box', layout: 'vertical', spacing: 'sm', contents: [
+          btnUri(label, url)
+        ]
+      }
+    }
+  };
+}
+
+function summaryText(lang, data, headerLabel) {
+  const lines = [
+    `${headerLabel}:`,
+    `• Branch: ${data.branch || '-'}`,
+    `• Date: ${data.date || '-'}`,
+    `• Time: ${data.time || '-'}`,
+    `• Menu: ${data.menu || '-'}`,
+    `• Name: ${data.name || '-'}`,
+    `• Phone: ${data.phone || '-'}`,
+    `• Discount: ${data.discount || '—'}`,
+    '',
+    // Booking received but will confirm feasibility
+  ];
+  return lines.join('\n');
+}
+
+// ----- UI helpers -----
+function text(s) { return { type: 'text', text: s }; }
+function btnPostback(label, data) {
+  return { type: 'button', style: 'primary', action: { type: 'postback', label, data } };
+}
+function btnUri(label, uri) {
+  return { type: 'button', style: 'link', action: { type: 'uri', label, uri } };
+}
+
+// ----- Health check -----
+app.get('/', (req, res) => res.send('fufu LINE Booking Bot is running'));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log('LINE bot listening on ' + PORT));
+app.listen(PORT, () => console.log(`Server running on ${PORT}`));
