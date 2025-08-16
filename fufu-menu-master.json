@@ -1,0 +1,148 @@
+{
+  "currency": "THB",
+  "length_definitions": {
+    "RET": "Roots only (new growth)",
+    "S": "Not beyond the jawline",
+    "M": "Not beyond the collarbone",
+    "L": "Beyond the collarbone",
+    "XL": "From the middle of the back downward"
+  },
+  "branches": {
+    "THONGLO": { "label": "Thong Lo", "lengths": ["RET", "S", "M", "L", "XL"] },
+    "PHROMPHONG": { "label": "Phrom Phong", "lengths": ["RET", "S", "M", "L"] }
+  },
+  "sections": [
+    {
+      "id": "coloring",
+      "name_en": "Coloring",
+      "items": [
+        { "id": "retouch", "name_en": "Color Retouch", "per_length": true,
+          "branch_prices": {
+            "THONGLO": {"RET": 1000, "S": 0, "M": 0, "L": 0, "XL": 0},
+            "PHROMPHONG": {"RET": 990, "S": 0, "M": 0, "L": 0}
+          } },
+        { "id": "one_color", "name_en": "One Color", "per_length": true,
+          "branch_prices": {
+            "THONGLO": {"S": 2000, "M": 2500, "L": 3000, "XL": 3500},
+            "PHROMPHONG": {"S": 1500, "M": 1800, "L": 2300}
+          } },
+        { "id": "bleach_only", "name_en": "Bleach Only", "per_length": true,
+          "branch_prices": {
+            "THONGLO": {"RET":2000, "S": 2500, "M": 3000, "L": 3500, "XL": 4000},
+            "PHROMPHONG": {"RET":2000, "S": 2500, "M": 3000, "L": 3500}
+          } },
+        { "id": "bleach_on_color", "name_en": "Bleach on Color", "per_length": true,
+          "branch_prices": {
+            "THONGLO": {"S": 3500, "M": 4250, "L": 5000, "XL": 5750},
+            "PHROMPHONG": {"S": 3500, "M": 4250, "L": 5000}
+          } },
+        { "id": "balayage", "name_en": "Balayage", "per_length": true,
+          "branch_prices": {
+            "THONGLO": {"S": 4500, "M": 5250, "L": 6000, "XL": 6750},
+            "PHROMPHONG": {"S": 4500, "M": 5250, "L": 6000}
+          } },
+        { "id": "highlight", "name_en": "Highlights", "per_length": true,
+          "branch_prices": {
+            "THONGLO": {"S": 4000, "M": 4750, "L": 5500, "XL": 6250},
+            "PHROMPHONG": {"S": 4000, "M": 4750, "L": 5500}
+          } },
+        { "id": "other_design", "name_en": "Other Design Color", "per_length": true,
+          "branch_prices": {
+            "THONGLO": {"S": 3000, "M": 3750, "L": 4500, "XL": 5250},
+            "PHROMPHONG": {"S": 3000, "M": 3750, "L": 4500}
+          } }
+      ]
+    },
+    {
+      "id": "addons",
+      "name_en": "Add-ons",
+      "items": [
+        { "id": "premium_color_inoa", "name_en": "Premium Color (INOA)", "per_length": true,
+          "branch_prices": {
+            "THONGLO": {"RET": 400, "S": 600, "M": 850, "L": 1100, "XL": 1350},
+            "PHROMPHONG": {"unavailable": true}
+          } },
+        { "id": "premium_color_koleston", "name_en": "Premium Color (KOLESTON)", "per_length": true,
+          "branch_prices": {
+            "THONGLO": {"RET": 400, "S": 600, "M": 850, "L": 1100, "XL": 1350},
+            "PHROMPHONG": {"RET": 200, "S": 300, "M": 400, "L": 500}
+          } },
+        { "id": "additional_bleach", "name_en": "Additional Bleach", "per_length": true,
+          "branch_prices": {
+            "THONGLO": {"RET": 500, "S": 1250, "M": 1500, "L": 1750, "XL": 2000},
+            "PHROMPHONG": {"RET": 500, "S": 1250, "M": 1500, "L": 1750}
+          } },
+        { "id": "hair_trim", "name_en": "Hair Trim (Add-on)", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 0, "unavailable": true}, "PHROMPHONG": {"flat": 300} } }
+      ]
+    },
+    {
+      "id": "treatment",
+      "name_en": "Treatment",
+      "items": [
+        { "id": "kerastase_chronologiste", "name_en": "Kérastase Chronologiste", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 2000}, "PHROMPHONG": {"unavailable": true} } },
+        { "id": "kerastase_chronologiste_caviar", "name_en": "Kérastase Chronologiste Caviar Ritual", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 5500}, "PHROMPHONG": {"unavailable": true} } },
+        { "id": "kerastase_fusio", "name_en": "Kérastase Fusio-Dose", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 2200}, "PHROMPHONG": {"flat": 0} } },
+        { "id": "demi_flowdia", "name_en": "Demi Flowdia", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 800}, "PHROMPHONG": {"unavailable": true} } },
+        { "id": "wella_sp_hydrate", "name_en": "Wella SP Hydrate", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 1000}, "PHROMPHONG": {"flat": 1000} } },
+        { "id": "wella_sp_hydrate_premium", "name_en": "Wella SP Hydrate (Premium)", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 1800}, "PHROMPHONG": {"unavailable": true} } },
+        { "id": "kerastase_genesis", "name_en": "Kérastase Genesis", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 1600}, "PHROMPHONG": {"flat": 1300} } },
+        { "id": "wella_plex", "name_en": "WellaPlex", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 800}, "PHROMPHONG": {"unavailable": true} } },
+        { "id": "loreal_absolute_repair", "name_en": "L'Oréal Absolut Repair", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 900}, "PHROMPHONG": {"flat": 900} } },
+        { "id": "wella_sp_repair", "name_en": "Wella SP Repair", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 1000}, "PHROMPHONG": {"unavailable": true} } },
+        { "id": "wella_sp_repair_premium", "name_en": "Wella SP Repair (Premium)", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 1800}, "PHROMPHONG": {"unavailable": true} } },
+        { "id": "bex_deep_layer", "name_en": "b-ex Deep Layer", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 1300}, "PHROMPHONG": {"flat": 1300} } },
+        { "id": "kerastase_chroma_absolu", "name_en": "Kérastase Chroma Absolu", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 1300}, "PHROMPHONG": {"unavailable": true} } },
+        { "id": "demi_composio_pro", "name_en": "Demi Composio Pro", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 1600}, "PHROMPHONG": {"unavailable": true} } },
+        { "id": "loreal_absolut_repair_molecular", "name_en": "L'Oréal Absolut Repair Molecular", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 2000}, "PHROMPHONG": {"unavailable": true} } },
+        { "id": "wella_invigo", "name_en": "Wella Invigo", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 500}, "PHROMPHONG": {"flat": 500} } },
+        { "id": "loreal_vitamino", "name_en": "L'Oréal Vitamino", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 900}, "PHROMPHONG": {"flat": 900} } },
+        { "id": "wella_sp_color_save", "name_en": "Wella SP Color Save", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 1000}, "PHROMPHONG": {"flat": 1000} } },
+        { "id": "lp_metal_dx", "name_en": "L'Oréal Metal DX", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 1400}, "PHROMPHONG": {"unavailable": true} } },
+        { "id": "wella_sp_color_save_premium", "name_en": "Wella SP Color Save (Premium)", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 1800}, "PHROMPHONG": {"unavailable": true} } },
+        { "id": "loreal_anti_hair_thinning", "name_en": "L'Oréal Anti-Hair Thinning", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 1500}, "PHROMPHONG": {"unavailable": true} } },
+        { "id": "loreal_anti_dandruff", "name_en": "L'Oréal Anti-Dandruff", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 1000}, "PHROMPHONG": {"unavailable": true} } },
+        { "id": "loreal_anti_oiliness", "name_en": "L'Oréal Anti-Oiliness", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 900}, "PHROMPHONG": {"unavailable": true} } },
+        { "id": "loreal_anti_discomfort", "name_en": "L'Oréal Anti-Discomfort", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 1400}, "PHROMPHONG": {"unavailable": true} } }
+      ]
+    },
+    {
+      "id": "styling",
+      "name_en": "Styling",
+      "items": [
+        { "id": "shampoo_blowdry", "name_en": "Shampoo & Blow-dry", "per_length": false,
+          "branch_prices": { "THONGLO": {"flat": 600}, "PHROMPHONG": {"flat": 600} } }
+      ]
+    }
+  ],
+  "display_rules": {
+    "base_only_with_note": true,
+    "note": "Final bill will include 7% VAT and 10% service fee.",
+    "final_price_multiplier": 1.17,
+    "unavailable_note": "Not available at this branch"
+  }
+}
