@@ -18,24 +18,6 @@ const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET,
 };
-// Require the SDK (if not already at top of file)
-const line = require('@line/bot-sdk');
-
-// Minimal, safe webhook
-app.post('/webhook', line.middleware({
-  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
-  channelSecret: process.env.LINE_CHANNEL_SECRET,
-}), (req, res) => {
-  // 1) Reply 200 immediately so LINE Verify succeeds
-  res.sendStatus(200);
-
-  // 2) Process events asynchronously (doesn’t block the 200)
-  const events = req.body.events || [];
-  console.log('[WEBHOOK]', new Date().toISOString(), 'events =', events.map(e => e.type));
-  Promise.all(events.map(handleEvent))
-    .catch(err => console.error('[WEBHOOK] async error:', err));
-});
-
 
 const client = new Client(config);
 const app = express();
@@ -58,19 +40,22 @@ try {
 // Menu flow (only triggers on "menu" / "メニュー" / "เมนู")
 const menuFlow = require('./menu-flow')({ client, priceData });
 
-// Verify LINE signature manually to avoid accidental 200s
-app.post('/webhook', (req, res) => {
-  const signature = req.headers['x-line-signature'];
-  if (!validateSignature(req.rawBody, config.channelSecret, signature)) {
-    return res.status(401).send('Unauthorized');
-  }
-  Promise
-    .all((req.body.events || []).map(handleEvent))
-    .then(() => res.status(200).end())
-    .catch((err) => {
-      console.error(err);
-      res.status(500).end();
-    });
+// Require the SDK (if not already at top of file)
+const line = require('@line/bot-sdk');
+
+// Minimal, safe webhook
+app.post('/webhook', line.middleware({
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+  channelSecret: process.env.LINE_CHANNEL_SECRET,
+}), (req, res) => {
+  // 1) Reply 200 immediately so LINE Verify succeeds
+  res.sendStatus(200);
+
+  // 2) Process events asynchronously (doesn’t block the 200)
+  const events = req.body.events || [];
+  console.log('[WEBHOOK]', new Date().toISOString(), 'events =', events.map(e => e.type));
+  Promise.all(events.map(handleEvent))
+    .catch(err => console.error('[WEBHOOK] async error:', err));
 });
 
 // ----- In-memory session store -----
