@@ -1,13 +1,13 @@
 {
   "name": "fufu-line-bot",
   "version": "1.0.0",
-  "private": true,
-  "main": "app.js",
-  "scripts": {
-    "start": "node app.js"
-  },
+  "main": "index.js",
+  "type": "commonjs",
+  "engines": { "node": "20.x" },
   "dependencies": {
     "@line/bot-sdk": "^7.5.2",
+    "body-parser": "^1.20.2",
     "express": "^4.19.2"
-  }
+  },
+  "scripts": { "start": "node index.js" }
 }
