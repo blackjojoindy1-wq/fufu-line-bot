@@ -1,26 +1,17 @@
 /**
- * LINE Booking Bot – Quick Replies (Node.js)
+ * LINE Booking Bot – Quick Replies (Node.js) + Menu Flow (Exact Trigger)
  * ------------------------------------------------------------
- * Features
- * - Starts booking flow ONLY when user types one of: "book", "จอง", "予約" (case-insensitive)
- * - On first add (follow event), sends a single friendly how-to-book reminder
- * - Multilingual UI copy (English, Thai, Japanese) 
- * - Collects: Language → Branch → Date → Time → Menu → Name → Phone → (Optional Discount)
- * - Shows correct Menu links per branch
- * - After user confirms, shows registration buttons per-branch + guidance (New vs Existing customer)
- * - Tells the customer they can consult a colorist anytime (before and after flow)
- * - Displays a clean text summary at the end and says booking is received (pending confirmation)
- * - Avoids resending the booking summary for any subsequent messages after completion
- *
- * Notes
- * - This sample uses an in-memory session store for simplicity. For production, replace with Redis/DB.
- * - Requires: LINE_CHANNEL_SECRET, LINE_CHANNEL_ACCESS_TOKEN environment variables.
- * - Run: `npm i express body-parser @line/bot-sdk` and then `node index.js`.
+ * Additions in this merged version:
+ * - Menu flow triggers ONLY on: "menu", "メニュー", "เมนู" (exact match, case-insensitive)
+ * - Branch → Category (Coloring / Treatment / Add-ons / Show All) → (Length for per-length)
+ * - Reads base prices from fufu-menu-master.json and shows unavailable items with a note
+ * - 15s anti-spam cooldown for menu trigger
+ * - Booking flow remains on "book" / "จอง" / "予約" and will not be spammed by menu
  */
 
 const express = require('express');
 const bodyParser = require('body-parser');
-const { Client, middleware, validateSignature } = require('@line/bot-sdk');
+const { Client, validateSignature } = require('@line/bot-sdk');
 
 // ----- Config -----
 const config = {
@@ -32,9 +23,22 @@ const client = new Client(config);
 const app = express();
 app.use(bodyParser.json({ verify: rawBodySaver }));
 
-function rawBodySaver(req, res, buf) {
-  req.rawBody = buf;
+function rawBodySaver(req, res, buf) { req.rawBody = buf; }
+
+// Health check
+app.get('/', (req, res) => res.status(200).send('fufu LINE Booking Bot is running'));
+
+// Load menu JSON (base prices; marks unavailable per branch)
+let priceData;
+try {
+  priceData = require('./fufu-menu-master.json');
+} catch (e) {
+  console.error('Failed to load fufu-menu-master.json:', e.message);
+  priceData = { branches: {}, sections: [], display_rules: {} };
 }
+
+// Menu flow (only triggers on "menu" / "メニュー" / "เมนู")
+const menuFlow = require('./menu-flow')({ client, priceData });
 
 // Verify LINE signature manually to avoid accidental 200s
 app.post('/webhook', (req, res) => {
@@ -76,9 +80,7 @@ function getSession(userId) {
   return SESSIONS.get(userId);
 }
 
-function resetSession(userId) {
-  SESSIONS.delete(userId);
-}
+function resetSession(userId) { SESSIONS.delete(userId); }
 
 // ----- Localization (GUI text only) -----
 const T = {
@@ -197,7 +199,17 @@ async function handleEvent(event) {
   const userId = event.source?.userId;
   if (!userId) return Promise.resolve(null);
 
-  // On first add: one-time how-to-book reminder
+  // 0) Menu flow intercept (exact-trigger + postbacks)
+  if (type === 'message' && event.message.type === 'text') {
+    const handled = await menuFlow.onText(event);
+    if (handled) return;
+  }
+  if (type === 'postback') {
+    const handled = await menuFlow.onPostback(event);
+    if (handled) return;
+  }
+
+  // 1) On first add: one-time how-to-book reminder
   if (type === 'follow') {
     const lang = 'en';
     const t = T[lang];
@@ -211,7 +223,7 @@ async function handleEvent(event) {
 
   const session = getSession(userId);
 
-  // Always allow retrigger if user sends a trigger word
+  // 2) Booking trigger words
   if (type === 'message' && event.message.type === 'text') {
     const msg = (event.message.text || '').trim();
     if (TRIGGERS.some((re) => re.test(msg))) {
@@ -225,12 +237,9 @@ async function handleEvent(event) {
   }
 
   // If user previously completed booking, do NOT send summaries again for any random messages
-  if (session.completed) {
-    // Optionally: reply something short ONLY if they explicitly type trigger again (handled above)
-    return Promise.resolve(null);
-  }
+  if (session.completed) { return Promise.resolve(null); }
 
-  // Route steps
+  // 3) Route steps
   if (type === 'message' && event.message.type === 'text' && !session.started) {
     // Ignore free chat until they type trigger word; but still be helpful about consulting
     return client.replyMessage(event.replyToken, [text("Hi! Type 'book' / 'จอง' / '予約' to start booking.\nYou can also consult our colorists here anytime.")]);
@@ -243,7 +252,6 @@ async function handleEvent(event) {
       session.step = 'pick_branch';
       return askBranch(event.replyToken, session.lang);
     } else if (type === 'message' && event.message.type === 'text') {
-      // Allow manual language text input
       const input = event.message.text.toLowerCase();
       if (input.includes('thai') || input.includes('ไทย')) session.lang = 'th';
       else if (input.includes('jap') || input.includes('日本')) session.lang = 'ja';
@@ -283,7 +291,6 @@ async function handleEvent(event) {
       return askTime(event.replyToken, session.lang);
     }
     if (type === 'message' && event.message.type === 'text') {
-      // naive date capture (YYYY-MM-DD)
       const m = event.message.text.trim();
       if (/^\d{4}-\d{2}-\d{2}$/.test(m)) {
         session.data.date = m;
@@ -330,9 +337,7 @@ async function handleEvent(event) {
   if (session.step === 'ask_phone') {
     if (type === 'message' && event.message.type === 'text') {
       const raw = event.message.text.replace(/[^0-9+]/g, '');
-      if (raw.length < 7) {
-        return client.replyMessage(event.replyToken, [text(t.ask_phone)]);
-      }
+      if (raw.length < 7) { return client.replyMessage(event.replyToken, [text(t.ask_phone)]); }
       session.data.phone = raw;
       session.step = 'ask_discount';
       return client.replyMessage(event.replyToken, [text(t.ask_discount)]);
@@ -353,7 +358,6 @@ async function handleEvent(event) {
       if (event.postback.data === 'confirm=yes') {
         session.completed = true;
         DONE_USERS.add(userId);
-        // Send received + summary + registration buttons
         const msgs = [
           text(`${t.received_title}\n${t.received_body}`),
           text(summaryText(session.lang, session.data, t.summary_header)),
@@ -525,8 +529,7 @@ function summaryText(lang, data, headerLabel) {
     `• Name: ${data.name || '-'}`,
     `• Phone: ${data.phone || '-'}`,
     `• Discount: ${data.discount || '—'}`,
-    '',
-    // Booking received but will confirm feasibility
+    ''
   ];
   return lines.join('\n');
 }
@@ -534,14 +537,125 @@ function summaryText(lang, data, headerLabel) {
 // ----- UI helpers -----
 function text(s) { return { type: 'text', text: s }; }
 function btnPostback(label, data) {
-  return { type: 'button', style: 'primary', action: { type: 'postback', label, data } };
+  return { type: 'button', style: 'primary', action: { type: 'postback', label, data, displayText: label } };
 }
 function btnUri(label, uri) {
   return { type: 'button', style: 'link', action: { type: 'uri', label, uri } };
 }
 
-// ----- Health check -----
-app.get('/', (req, res) => res.send('fufu LINE Booking Bot is running'));
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+
+--- file: menu-flow.js
+// Menu Flow Trigger Patch (JS)
+// Purpose: Only start the menu flow when user sends "menu"/"メニュー"/"เมนู".
+// Then: ask Branch -> ask Menu Category (Coloring / Treatment / Add-ons / Show All).
+// Do NOT spam: use per-user cooldown and exact-trigger regex.
+// Postbacks are used for branch & category selections to keep the chat clean.
+
+module.exports = function createMenuFlow({ client, priceData }) {
+  const MENU_TRIGGERS = [/^\s*(menu|メニュー|เมนู)\s*$/i];
+  const COOLDOWN_MS = 15_000; // 15s anti-spam
+  const lastMenuAt = new Map(); // userId -> timestamp
+
+  function isMenuTrigger(text) { return MENU_TRIGGERS.some((rx) => rx.test(text || '')); }
+  function withinCooldown(userId) { const last = lastMenuAt.get(userId) || 0; return Date.now() - last < COOLDOWN_MS; }
+  function touchCooldown(userId) { lastMenuAt.set(userId, Date.now()); }
+
+  function parsePB(data) {
+    const out = { _raw: data };
+    if (!data || !data.startsWith('menu')) return out;
+    data.split('|').slice(1).forEach((kv) => { const [k, v] = kv.split('='); out[k] = v; });
+    return out;
+  }
+
+  async function onText(event) {
+    const userId = event.source.userId || 'anon';
+    const text = (event.message && event.message.text) || '';
+    if (!isMenuTrigger(text)) return false; // NOT handled → let other logic run
+    if (withinCooldown(userId)) return true; // handled (silently) to prevent spam
+    touchCooldown(userId);
+    await askBranch(event.replyToken);
+    return true; // handled
+  }
+
+  async function onPostback(event) {
+    const pb = parsePB(event.postback && event.postback.data);
+    if (!pb || !pb._raw || !pb._raw.startsWith('menu')) return false; // not for us
+
+    if (pb.branch && !pb.cat) { await askCategory(event.replyToken, pb.branch); return true; }
+
+    if (pb.branch && pb.cat && !pb.len) {
+      if (pb.cat === 'all') { await showAllSections(event.replyToken, pb.branch); return true; }
+      if (pb.cat === 'coloring' || pb.cat === 'addons') { await askLength(event.replyToken, pb.branch, pb.cat); }
+      else { await showSection(event.replyToken, pb.branch, pb.cat, null); }
+      return true;
+    }
+
+    if (pb.branch && pb.cat && pb.len) { await showSection(event.replyToken, pb.branch, pb.cat, pb.len); return true; }
+    return false;
+  }
+
+  async function askBranch(replyToken) {
+    return client.replyMessage(replyToken, {
+      type: 'text',
+      text: 'Choose a branch / เลือกสาขา / 店舗を選択',
+      quickReply: { items: [ qrPB('Thong Lo / ทองหล่อ', 'menu|branch=THONGLO'), qrPB('Phrom Phong / พร้อมพงษ์', 'menu|branch=PHROMPHONG') ] }
+    });
+  }
+
+  async function askCategory(replyToken, branch) {
+    return client.replyMessage(replyToken, {
+      type: 'text',
+      text: 'Which menu? (Coloring / Treatment / Add-ons / Show All)',
+      quickReply: { items: [ qrPB('Color Menu', `menu|branch=${branch}|cat=coloring`), qrPB('Treatment Menu', `menu|branch=${branch}|cat=treatment`), qrPB('Add-ons', `menu|branch=${branch}|cat=addons`), qrPB('Show All', `menu|branch=${branch}|cat=all`) ] }
+    });
+  }
+
+  async function askLength(replyToken, branch, cat) {
+    const lengths = (priceData.branches[branch] && priceData.branches[branch].lengths) || [];
+    const labels = { RET: 'Retouch (roots)', S: 'S – Not beyond jawline', M: 'M – Not beyond collarbone', L: 'L – Beyond collarbone', XL: 'XL – Mid-back downward' };
+    return client.replyMessage(replyToken, {
+      type: 'text', text: 'Select hair length',
+      quickReply: { items: lengths.map((len) => qrPB(labels[len] || len, `menu|branch=${branch}|cat=${cat}|len=${len}`)) }
+    });
+  }
+
+  async function showAllSections(replyToken, branch) {
+    return client.replyMessage(replyToken, { type: 'text', text: 'All menus for this branch:', quickReply: { items: [ qrPB('Coloring', `menu|branch=${branch}|cat=coloring`), qrPB('Treatment', `menu|branch=${branch}|cat=treatment`), qrPB('Add-ons', `menu|branch=${branch}|cat=addons`) ] } });
+  }
+
+  async function showSection(replyToken, branch, cat, len) {
+    const section = priceData.sections.find((s) => s.id === cat);
+    if (!section) return client.replyMessage(replyToken, { type: 'text', text: 'Menu not found.' });
+
+    const note = priceData.display_rules?.note || 'Final bill will include 7% VAT and 10% service fee.';
+    const unavailableNote = priceData.display_rules?.unavailable_note || 'Not available at this branch';
+
+    const lines = section.items.map((it) => {
+      const bp = it.branch_prices && it.branch_prices[branch];
+      if (!bp) return `• ${nameOf(it)} — ${unavailableNote}`;
+      if (bp.unavailable) return `• ${nameOf(it)} — ${unavailableNote}`;
+
+      if (it.per_length) {
+        if (!len) return `• ${nameOf(it)} — choose hair length first`;
+        const price = bp[len];
+        if (typeof price === 'number' && price > 0) {
+          return `• ${nameOf(it)} — ${fmt(price)} THB  (${note})`;
+        }
+        return `• ${nameOf(it)} — ${unavailableNote}`;
+      }
+
+      if (typeof bp.flat === 'number') { return `• ${nameOf(it)} — ${fmt(bp.flat)} THB  (${note})`; }
+      return `• ${nameOf(it)} — ${unavailableNote}`;
+    });
+
+    return client.replyMessage(replyToken, { type: 'text', text: lines.join('\n') });
+  }
+
+  function qrPB(label, data) { return { type: 'action', action: { type: 'postback', label, data, displayText: label } }; }
+  function fmt(n) { return new Intl.NumberFormat('en-US').format(n); }
+  function nameOf(it) { return it.name_en || it.id; }
+
+  return { onText, onPostback };
+}
