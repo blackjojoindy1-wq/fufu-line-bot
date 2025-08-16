@@ -18,6 +18,24 @@ const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET,
 };
+// Require the SDK (if not already at top of file)
+const line = require('@line/bot-sdk');
+
+// Minimal, safe webhook
+app.post('/webhook', line.middleware({
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+  channelSecret: process.env.LINE_CHANNEL_SECRET,
+}), (req, res) => {
+  // 1) Reply 200 immediately so LINE Verify succeeds
+  res.sendStatus(200);
+
+  // 2) Process events asynchronously (doesn’t block the 200)
+  const events = req.body.events || [];
+  console.log('[WEBHOOK]', new Date().toISOString(), 'events =', events.map(e => e.type));
+  Promise.all(events.map(handleEvent))
+    .catch(err => console.error('[WEBHOOK] async error:', err));
+});
+
 
 const client = new Client(config);
 const app = express();
